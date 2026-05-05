@@ -1,0 +1,11 @@
+[package]
+name = "ciosai_synth"
+version = "0.2.0"
+edition = "2026"
+
+[dependencies]
+anyhow = "1.0.101"
+clap = { version = ">=4.0, <=4.5", features = ["derive"] }
+cpal = "0.17.1"
+device_query = "4.0.1"
+ringbuf = "0.4.8"
