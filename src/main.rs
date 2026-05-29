@@ -66,39 +66,59 @@ pub struct OneSound {
     note_pitch: i8,
     position: usize,
 }
+#[derive(Clone)]
+enum AudioCommand {
+    Bell(i8),
+    DelayVolume(f32),
+}
+
+const DELAY_BUFFER_SIZE:usize = 1<<12;
+
 pub struct Player {
     cached_sounds: HashMap<i8, Arc<Vec<f32>>>,
     playing: Vec<OneSound>,
-    consumer: Caching<Arc<SharedRb<Heap<i8>>>, false, true>,
+    consumer: Caching<Arc<SharedRb<Heap<AudioCommand>>>, false, true>,
+    delay_volume: f32,
+    delay_buffer: [f32; DELAY_BUFFER_SIZE],
+    delay_pointer: usize,
 }
 impl Player {
+    //                           at least 1
+    //let conv = |x:f32,center:f32,spread:f32| f32::exp(-(x-center).powi(2)/spread.powi(2))/spread;
     pub fn process<T:Sample>(&mut self, data: &mut [T], channels: u32, sample_rate: u32) 
         where T: FromSample<f32>
     {
         while let Some(command) = self.consumer.try_pop() {
-            self.playing.push(OneSound { note_pitch: command.clone(), position: 0 });
+            match command {
+                AudioCommand::Bell(note_name) => {
+                    self.playing.push(OneSound { note_pitch: note_name.clone(), position: 0 });
 
-            if !self.cached_sounds.contains_key(&command) {
-                let size = (sample_rate/2) * (channels);
-                let mut buffer:Vec<f32> = Vec::new();
-                for i in 0..size {
-                    let is_left = i%channels==0;
-                    let t = ((i/channels) as f32)/(sample_rate as f32);
+                    if !self.cached_sounds.contains_key(&note_name) {
+                        let size = (sample_rate/2) * (channels);
+                        let mut buffer:Vec<f32> = Vec::new();
+                        for i in 0..size {
+                            let is_left = i%channels==0;
+                            let t = ((i/channels) as f32)/(sample_rate as f32);
 
-                    let pitch = Instrument::name_to_pitch(&command);
-                    let decay = 20.0;
-                    let volume = 0.2;
+                            let pitch = Instrument::name_to_pitch(&note_name);
+                            let decay = 40.0;
+                            let volume = 0.2;
 
-                    let mut val;
-                    {
-                        val = if (t*pitch).fract()<0.5 { -1.0 } else { 1.0 };
-                        val *= f32::exp(-t.fract() * decay) * volume;
+                            let mut val;
+                            {
+                                val = if (t*pitch).fract()<0.5 { -1.0 } else { 1.0 };
+                                val *= f32::exp(-t.fract() * decay) * volume;
+                            }
+
+                            buffer.push(val);
+                        }
+
+                        self.cached_sounds.insert(note_name.clone(), Arc::new(buffer));
                     }
-
-                    buffer.push(val);
-                }
-
-                self.cached_sounds.insert(command.clone(), Arc::new(buffer));
+                },
+                AudioCommand::DelayVolume(volume) => {
+                    self.delay_volume = volume;
+                },
             }
         }
         for frame in data.chunks_mut(channels as usize) {
@@ -121,14 +141,22 @@ impl Player {
                         None => { false }
                     }
                 });
+
+                let delay_sound = self.delay_buffer[(self.delay_pointer+1)%DELAY_BUFFER_SIZE];
+
+                accum += delay_sound*self.delay_volume;
                 accum = accum.clamp(-1.0, 1.0);
+
+                self.delay_buffer[self.delay_pointer] = accum;
+                self.delay_pointer = (self.delay_pointer+1)%DELAY_BUFFER_SIZE;
+
                 frame[sample as usize] = Sample::from_sample(accum);
             }
         }
     }
 }
 pub struct Instrument {
-    producer: Caching<Arc<SharedRb<Heap<i8>>>, true, false>,
+    producer: Caching<Arc<SharedRb<Heap<AudioCommand>>>, true, false>,
     player: Player,
 }
 impl Instrument {
@@ -153,7 +181,7 @@ impl Instrument {
 
     pub fn new() -> Self {
         // 32 slots for audio commands (tell audio engine what pitch to play)
-        let ring = HeapRb::<i8>::new(32);
+        let ring = HeapRb::<AudioCommand>::new(32);
         let (producer, consumer) = ring.split();
 
         Self {
@@ -162,6 +190,9 @@ impl Instrument {
                 cached_sounds: HashMap::new(),
                 playing: Vec::new(),
                 consumer: consumer,
+                delay_volume: 0.0,
+                delay_buffer: [0.0; DELAY_BUFFER_SIZE],
+                delay_pointer: 0,
             }
         }
     }
@@ -195,20 +226,23 @@ where
     let keyboard_reader = DeviceState::new();
     let mut pressed:Vec<Keycode> = Vec::new();
 
-    let mut piano:HashMap<Keycode, i8> = HashMap::new();
-    piano.insert(Keycode::Q, 0);
-    piano.insert(Keycode::Key2, 1);
-    piano.insert(Keycode::W, 2);
-    piano.insert(Keycode::Key3, 3);
-    piano.insert(Keycode::E, 4);
-    piano.insert(Keycode::R, 5);
-    piano.insert(Keycode::Key5, 6);
-    piano.insert(Keycode::T, 7);
-    piano.insert(Keycode::Key6, 8);
-    piano.insert(Keycode::Y, 9);
-    piano.insert(Keycode::Key7, 10);
-    piano.insert(Keycode::U, 11);
-    piano.insert(Keycode::I, 12);
+    let mut piano:HashMap<Keycode, AudioCommand> = HashMap::new();
+    piano.insert(Keycode::Q, AudioCommand::Bell(0));
+    piano.insert(Keycode::Key2, AudioCommand::Bell(1));
+    piano.insert(Keycode::W, AudioCommand::Bell(2));
+    piano.insert(Keycode::Key3, AudioCommand::Bell(3));
+    piano.insert(Keycode::E, AudioCommand::Bell(4));
+    piano.insert(Keycode::R, AudioCommand::Bell(5));
+    piano.insert(Keycode::Key5, AudioCommand::Bell(6));
+    piano.insert(Keycode::T, AudioCommand::Bell(7));
+    piano.insert(Keycode::Key6, AudioCommand::Bell(8));
+    piano.insert(Keycode::Y, AudioCommand::Bell(9));
+    piano.insert(Keycode::Key7, AudioCommand::Bell(10));
+    piano.insert(Keycode::U, AudioCommand::Bell(11));
+    piano.insert(Keycode::I, AudioCommand::Bell(12));
+
+    piano.insert(Keycode::A, AudioCommand::DelayVolume(0.5));
+    piano.insert(Keycode::S, AudioCommand::DelayVolume(0.0));
 
     loop {
         let keys = keyboard_reader.get_keys();
@@ -219,11 +253,9 @@ where
             .cloned()
             .collect();
 
-        let piano = piano.to_owned();
-
-        for (k,v) in piano {
+        for (k,v) in &piano {
             if just_pressed.contains(&k) {
-                let _ = prod.try_push(v);
+                let _ = prod.try_push(v.clone());
             }
         }
 
