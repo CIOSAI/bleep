@@ -70,6 +70,7 @@ pub struct OneSound {
 enum AudioCommand {
     Bell(i8),
     DelayVolume(f32),
+    Hardclip(f32, f32),
 }
 
 const DELAY_BUFFER_SIZE:usize = 1<<12;
@@ -78,6 +79,8 @@ pub struct Player {
     cached_sounds: HashMap<i8, Arc<Vec<f32>>>,
     playing: Vec<OneSound>,
     consumer: Caching<Arc<SharedRb<Heap<AudioCommand>>>, false, true>,
+    hardclip_amount: f32,
+    hardclip_postgain: f32,
     delay_volume: f32,
     delay_buffer: [f32; DELAY_BUFFER_SIZE],
     delay_pointer: usize,
@@ -119,6 +122,10 @@ impl Player {
                 AudioCommand::DelayVolume(volume) => {
                     self.delay_volume = volume;
                 },
+                AudioCommand::Hardclip(amount, postgain) => {
+                    self.hardclip_amount = amount;
+                    self.hardclip_postgain = postgain;
+                },
             }
         }
         for frame in data.chunks_mut(channels as usize) {
@@ -141,6 +148,8 @@ impl Player {
                         None => { false }
                     }
                 });
+
+                accum = (accum*self.hardclip_amount).clamp(-1.0, 1.0)*self.hardclip_postgain;
 
                 let delay_sound = self.delay_buffer[(self.delay_pointer+1)%DELAY_BUFFER_SIZE];
 
@@ -190,6 +199,8 @@ impl Instrument {
                 cached_sounds: HashMap::new(),
                 playing: Vec::new(),
                 consumer: consumer,
+                hardclip_amount: 1.0,
+                hardclip_postgain: 1.0,
                 delay_volume: 0.0,
                 delay_buffer: [0.0; DELAY_BUFFER_SIZE],
                 delay_pointer: 0,
@@ -243,6 +254,9 @@ where
 
     piano.insert(Keycode::A, AudioCommand::DelayVolume(0.5));
     piano.insert(Keycode::S, AudioCommand::DelayVolume(0.0));
+
+    piano.insert(Keycode::D, AudioCommand::Hardclip(32.0, 0.1));
+    piano.insert(Keycode::F, AudioCommand::Hardclip(1.0, 1.0));
 
     loop {
         let keys = keyboard_reader.get_keys();
