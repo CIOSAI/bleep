@@ -105,7 +105,7 @@ impl Player {
 
                             let mut val;
                             {
-                                val = if (t*pitch).fract()<0.5 { -1.0 } else { 1.0 };
+                                val = (t*pitch*f32::consts::TAU).sin();
                                 val *= f32::exp(-t.fract() * decay) * volume;
                             }
 
