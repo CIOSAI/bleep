@@ -3,6 +3,7 @@
 use core::f32;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time;
 
 use clap::Parser;
 use cpal::{
@@ -13,6 +14,8 @@ use ringbuf::{
     HeapRb, SharedRb, traits::{Producer, Consumer, Split}, wrap::caching::{Caching}, storage::{Heap}, 
 };
 use device_query::{DeviceQuery, DeviceState, Keycode};
+
+mod effect;
 
 #[derive(Parser, Debug)]
 #[command(version, about = "CPAL beep example", long_about = None)]
@@ -66,28 +69,21 @@ pub struct OneSound {
     note_pitch: i8,
     position: usize,
 }
+// TODO: allow for removing effects
 #[derive(Clone)]
 enum AudioCommand {
     Bell(i8),
-    DelayVolume(f32),
-    Hardclip(f32, f32),
+    NewEffect(&'static effect::EffectDefinition),
+    SetParam(usize,usize,f32),
 }
-
-const DELAY_BUFFER_SIZE:usize = 1<<12;
 
 pub struct Player {
     cached_sounds: HashMap<i8, Arc<Vec<f32>>>,
     playing: Vec<OneSound>,
     consumer: Caching<Arc<SharedRb<Heap<AudioCommand>>>, false, true>,
-    hardclip_amount: f32,
-    hardclip_postgain: f32,
-    delay_volume: f32,
-    delay_buffer: [f32; DELAY_BUFFER_SIZE],
-    delay_pointer: usize,
+    effect_stack: Vec<effect::Effect>,
 }
 impl Player {
-    //                           at least 1
-    //let conv = |x:f32,center:f32,spread:f32| f32::exp(-(x-center).powi(2)/spread.powi(2))/spread;
     pub fn process<T:Sample>(&mut self, data: &mut [T], channels: u32, sample_rate: u32) 
         where T: FromSample<f32>
     {
@@ -119,12 +115,16 @@ impl Player {
                         self.cached_sounds.insert(note_name.clone(), Arc::new(buffer));
                     }
                 },
-                AudioCommand::DelayVolume(volume) => {
-                    self.delay_volume = volume;
+                AudioCommand::NewEffect(def) => {
+                    self.effect_stack.push(effect::Effect {
+                        definition: def,
+                        data: (def.init)(),
+                    });
                 },
-                AudioCommand::Hardclip(amount, postgain) => {
-                    self.hardclip_amount = amount;
-                    self.hardclip_postgain = postgain;
+                AudioCommand::SetParam(index, key, value) => {
+                    if key>=effect::MAXIMUM_PARAM_INDEX { return };
+                    if index>=self.effect_stack.len() { return };
+                    self.effect_stack[index].data.params[key] = value;
                 },
             }
         }
@@ -138,7 +138,7 @@ impl Player {
                                 false
                             }
                             else {
-                                // refactor this
+                                // TODO: refactor the "unwrap" away
                                 let num = buffer.get(sound.position).unwrap();
                                 sound.position += 1;
                                 accum += num;
@@ -149,15 +149,18 @@ impl Player {
                     }
                 });
 
-                accum = (accum*self.hardclip_amount).clamp(-1.0, 1.0)*self.hardclip_postgain;
+                // TODO: add dry-wet dial
+                for effect in self.effect_stack.iter_mut() {
+                    accum = (effect.definition.apply)(
+                        &sample_rate,
+                        effect.data.params,
+                        &mut effect.data.buffer,
+                        &mut effect.data.buffer_pointer,
+                        accum
+                    );
+                }
 
-                let delay_sound = self.delay_buffer[(self.delay_pointer+1)%DELAY_BUFFER_SIZE];
-
-                accum += delay_sound*self.delay_volume;
                 accum = accum.clamp(-1.0, 1.0);
-
-                self.delay_buffer[self.delay_pointer] = accum;
-                self.delay_pointer = (self.delay_pointer+1)%DELAY_BUFFER_SIZE;
 
                 frame[sample as usize] = Sample::from_sample(accum);
             }
@@ -189,7 +192,7 @@ impl Instrument {
     }
 
     pub fn new() -> Self {
-        // 32 slots for audio commands (tell audio engine what pitch to play)
+        // 32 slots for audio commands
         let ring = HeapRb::<AudioCommand>::new(32);
         let (producer, consumer) = ring.split();
 
@@ -199,14 +202,15 @@ impl Instrument {
                 cached_sounds: HashMap::new(),
                 playing: Vec::new(),
                 consumer: consumer,
-                hardclip_amount: 1.0,
-                hardclip_postgain: 1.0,
-                delay_volume: 0.0,
-                delay_buffer: [0.0; DELAY_BUFFER_SIZE],
-                delay_pointer: 0,
+                effect_stack: Vec::new(),
             }
         }
     }
+}
+
+pub enum Modes {
+    PERFORM,
+    EDIT,
 }
 
 pub fn run<T>(device: &cpal::Device, config: &cpal::StreamConfig) -> Result<(), anyhow::Error>
@@ -234,7 +238,7 @@ where
 
     println!("press ESC key to stop program");
 
-    let keyboard_reader = DeviceState::new();
+    let device_reader = DeviceState::new();
     let mut pressed:Vec<Keycode> = Vec::new();
 
     let mut piano:HashMap<Keycode, AudioCommand> = HashMap::new();
@@ -252,14 +256,107 @@ where
     piano.insert(Keycode::U, AudioCommand::Bell(11));
     piano.insert(Keycode::I, AudioCommand::Bell(12));
 
-    piano.insert(Keycode::A, AudioCommand::DelayVolume(0.5));
-    piano.insert(Keycode::S, AudioCommand::DelayVolume(0.0));
+    let throttle_ms = 50;
+    let mut last_sent_slider = time::SystemTime::now();
+    let mut current_effect:usize = 0;
+    let mut current_param:usize = 0;
+    let effect_bank = [&effect::DELAY, &effect::HARDCLIP];
+    let mut current_to_add:usize = 0;
+    
+    let mut mode = Modes::PERFORM;
 
-    piano.insert(Keycode::D, AudioCommand::Hardclip(32.0, 0.1));
-    piano.insert(Keycode::F, AudioCommand::Hardclip(1.0, 1.0));
+    let mut effect_stack:Vec<&'static effect::EffectDefinition> = Vec::new();
+    let mut effect_params:Vec<Vec<f32>> = Vec::new();
+
+    let redraw = |
+        mode: &Modes,
+        effect_stack: &Vec<&'static effect::EffectDefinition>,
+        effect_params: &Vec<Vec<f32>>,
+        effect_bank: &[&effect::EffectDefinition; 2],
+        current_effect: &usize,
+        current_param: &usize,
+        current_to_add: &usize,
+    | {
+        print!("\n\n\n");
+        println!("TAB switch mode | h ← | k ↑ | j | ↓ l → | mouseX effect slider(hug the top side)");
+        match mode {
+            Modes::PERFORM => {
+                println!("PERFORM MODE");
+                for i in 0..effect_stack.len() {
+                    println!("  {}", effect_stack[i].title);
+                    print!("  ");
+                    for j in 0..effect_stack[i].param_count {
+                        let editing = i==*current_effect && j==*current_param;
+                        print!("{}\t{}\t{}",
+                               if editing {">"} else {" "},
+                               effect_stack[i].param_names[j],
+                               effect_params[i][j]
+                        );
+                    }
+                    println!("");
+                }
+            },
+            Modes::EDIT => {
+                println!("EDIT MODE");
+                println!("current effects:");
+                for i in 0..effect_stack.len() {
+                    println!("{}", effect_stack[i].title);
+                }
+                println!("");
+                println!("press enter to add:");
+                for i in 0..effect_bank.len() {
+                    let hovering = i==*current_to_add;
+                    println!("{}\t{}",
+                             if hovering {">"} else {" "},
+                             effect_bank[i].title
+                    );
+                }
+            },
+        };
+    };
+
+    redraw(
+        &mode,
+        &effect_stack,
+        &effect_params,
+        &effect_bank,
+        &current_effect,
+        &current_param,
+        &current_to_add,
+    );
+
+    let add_effect = |
+        prod: &mut Caching<Arc<SharedRb<Heap<AudioCommand>>>, true, false>,
+        effects: &mut Vec<&'static effect::EffectDefinition>,
+        params: &mut Vec<Vec<f32>>,
+        to_add: &'static effect::EffectDefinition,
+    | {
+        effects.push(to_add);
+        let default_values = (to_add.init)().params;
+        let mut vec = Vec::new();
+        for i in 0..to_add.param_count { vec.push(default_values[i]); }
+        params.push(vec);
+        let _ = prod.try_push(AudioCommand::NewEffect(to_add));
+    };
+
+    let set_param = |
+        prod: &mut Caching<Arc<SharedRb<Heap<AudioCommand>>>, true, false>,
+        params: &mut Vec<Vec<f32>>,
+        which_effect: usize,
+        which_param: usize,
+        to_value: f32,
+    | {
+        let _ = prod.try_push(
+            AudioCommand::SetParam(which_effect, which_param, to_value)
+        );
+        if which_effect<params.len() && which_param<params[which_effect].len() {
+            params[which_effect][which_param] = to_value;
+        }
+    };
+
 
     loop {
-        let keys = keyboard_reader.get_keys();
+        let keys = device_reader.get_keys();
 
         let just_pressed: Vec<Keycode> = keys
             .iter()
@@ -271,6 +368,86 @@ where
             if just_pressed.contains(&k) {
                 let _ = prod.try_push(v.clone());
             }
+        }
+
+        match mode {
+            Modes::PERFORM => {
+                if just_pressed.contains(&Keycode::K) {
+                    current_effect = current_effect.saturating_sub(1);
+                }
+                if just_pressed.contains(&Keycode::J) {
+                    current_effect = usize::min(current_effect+1, effect_params.len());
+                }
+                if just_pressed.contains(&Keycode::H) {
+                    current_param = current_param.saturating_sub(1);
+                }
+                if just_pressed.contains(&Keycode::L) {
+                    current_param = usize::min(current_param+1, effect_params[current_effect].len());
+                }
+                
+                if last_sent_slider.elapsed().is_ok_and(|dur| dur.as_millis()>throttle_ms) {
+                    let mouse = device_reader.get_mouse().coords;
+                    // only change values when it's on the top side
+                    if mouse.1<120 {
+                        let slider = (mouse.0 as f32) / 1920.0;
+                        set_param(
+                            &mut prod,
+                            &mut effect_params,
+                            current_effect,
+                            current_param,
+                            slider,
+                        );
+                        redraw(
+                            &mode,
+                            &effect_stack,
+                            &effect_params,
+                            &effect_bank,
+                            &current_effect,
+                            &current_param,
+                            &current_to_add,
+                        );
+                        last_sent_slider = time::SystemTime::now();
+                    }
+                }
+
+                if just_pressed.contains(&Keycode::Tab) {
+                    mode = Modes::EDIT;
+                }
+            },
+            Modes::EDIT => {
+                if just_pressed.contains(&Keycode::K) {
+                    current_to_add = current_to_add.saturating_sub(1);
+                }
+                if just_pressed.contains(&Keycode::J) {
+                    current_to_add = usize::min(current_to_add+1, effect_bank.len());
+                }
+
+                if just_pressed.contains(&Keycode::Enter) {
+                    add_effect(
+                        &mut prod,
+                        &mut effect_stack,
+                        &mut effect_params,
+                        effect_bank[current_to_add]
+                    );
+                }
+
+                if just_pressed.contains(&Keycode::Tab) {
+                    mode = Modes::PERFORM;
+                }
+            },
+        };
+
+        // stuff was entered to the terminal, redraw
+        if !just_pressed.is_empty() {
+            redraw(
+                &mode,
+                &effect_stack,
+                &effect_params,
+                &effect_bank,
+                &current_effect,
+                &current_param,
+                &current_to_add,
+            );
         }
 
         if keys.contains(&Keycode::Escape) {
