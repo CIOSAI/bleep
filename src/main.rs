@@ -138,8 +138,7 @@ impl Player {
                                 false
                             }
                             else {
-                                // TODO: refactor the "unwrap" away
-                                let num = buffer.get(sound.position).unwrap();
+                                let num = buffer.get(sound.position).unwrap_or(&0.0);
                                 sound.position += 1;
                                 accum += num;
                                 true
