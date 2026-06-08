@@ -82,6 +82,7 @@ pub struct Player {
     playing: Vec<OneSound>,
     consumer: Caching<Arc<SharedRb<Heap<AudioCommand>>>, false, true>,
     effect_stack: Vec<effect::Effect>,
+    effect_wetness: Vec<f32>,
 }
 impl Player {
     pub fn process<T:Sample>(&mut self, data: &mut [T], channels: u32, sample_rate: u32) 
@@ -120,11 +121,17 @@ impl Player {
                         definition: def,
                         data: (def.init)(),
                     });
+                    self.effect_wetness.push(1.0);
                 },
                 AudioCommand::SetParam(index, key, value) => {
-                    if key>=effect::MAXIMUM_PARAM_INDEX { return };
+                    if key>=effect::MAXIMUM_PARAM_INDEX+1 { return };
                     if index>=self.effect_stack.len() { return };
-                    self.effect_stack[index].data.params[key] = value;
+                    if key==0 {
+                        self.effect_wetness[index] = value;
+                    }
+                    else {
+                        self.effect_stack[index].data.params[key-1] = value;
+                    }
                 },
             }
         }
@@ -148,15 +155,16 @@ impl Player {
                     }
                 });
 
-                // TODO: add dry-wet dial
-                for effect in self.effect_stack.iter_mut() {
-                    accum = (effect.definition.apply)(
+                for (i, effect) in self.effect_stack.iter_mut().enumerate() {
+                    let wetness = self.effect_wetness[i];
+                    let wet_signal = (effect.definition.apply)(
                         &sample_rate,
                         effect.data.params,
                         &mut effect.data.buffer,
                         &mut effect.data.buffer_pointer,
                         accum
                     );
+                    accum = accum*(1.0-wetness) + wet_signal*wetness;
                 }
 
                 accum = accum.clamp(-1.0, 1.0);
@@ -202,6 +210,7 @@ impl Instrument {
                 playing: Vec::new(),
                 consumer: consumer,
                 effect_stack: Vec::new(),
+                effect_wetness: Vec::new(),
             }
         }
     }
@@ -266,10 +275,12 @@ where
 
     let mut effect_stack:Vec<&'static effect::EffectDefinition> = Vec::new();
     let mut effect_params:Vec<Vec<f32>> = Vec::new();
+    let mut effect_wetness:Vec<f32> = Vec::new();
 
     let redraw = |
         mode: &Modes,
         effect_stack: &Vec<&'static effect::EffectDefinition>,
+        effect_wetness: &Vec<f32>,
         effect_params: &Vec<Vec<f32>>,
         effect_bank: &[&effect::EffectDefinition; 2],
         current_effect: &usize,
@@ -284,12 +295,12 @@ where
                 for i in 0..effect_stack.len() {
                     println!("  {}", effect_stack[i].title);
                     print!("  ");
-                    for j in 0..effect_stack[i].param_count {
+                    for j in 0..effect_stack[i].param_count+1 {
                         let editing = i==*current_effect && j==*current_param;
                         print!("{}\t{}\t{}",
                                if editing {">"} else {" "},
-                               effect_stack[i].param_names[j],
-                               effect_params[i][j]
+                               if j==0 {"wet"} else {effect_stack[i].param_names[j-1]},
+                               if j==0 {effect_wetness[i]} else {effect_params[i][j-1]}
                         );
                     }
                     println!("");
@@ -317,6 +328,7 @@ where
     redraw(
         &mode,
         &effect_stack,
+        &effect_wetness,
         &effect_params,
         &effect_bank,
         &current_effect,
@@ -327,10 +339,12 @@ where
     let add_effect = |
         prod: &mut Caching<Arc<SharedRb<Heap<AudioCommand>>>, true, false>,
         effects: &mut Vec<&'static effect::EffectDefinition>,
+        wetness: &mut Vec<f32>,
         params: &mut Vec<Vec<f32>>,
         to_add: &'static effect::EffectDefinition,
     | {
         effects.push(to_add);
+        wetness.push(1.0);
         let default_values = (to_add.init)().params;
         let mut vec = Vec::new();
         for i in 0..to_add.param_count { vec.push(default_values[i]); }
@@ -341,6 +355,7 @@ where
     let set_param = |
         prod: &mut Caching<Arc<SharedRb<Heap<AudioCommand>>>, true, false>,
         params: &mut Vec<Vec<f32>>,
+        wetness: &mut Vec<f32>,
         which_effect: usize,
         which_param: usize,
         to_value: f32,
@@ -348,8 +363,11 @@ where
         let _ = prod.try_push(
             AudioCommand::SetParam(which_effect, which_param, to_value)
         );
-        if which_effect<params.len() && which_param<params[which_effect].len() {
-            params[which_effect][which_param] = to_value;
+        if which_param==0 {
+            wetness[which_effect] = to_value;
+        }
+        else if which_effect<params.len() && which_param-1<params[which_effect].len() {
+            params[which_effect][which_param-1] = to_value;
         }
     };
 
@@ -381,7 +399,7 @@ where
                     current_param = current_param.saturating_sub(1);
                 }
                 if just_pressed.contains(&Keycode::L) {
-                    current_param = usize::min(current_param+1, effect_params[current_effect].len());
+                    current_param = usize::min(current_param+1, effect_params[current_effect].len()+1);
                 }
                 
                 if last_sent_slider.elapsed().is_ok_and(|dur| dur.as_millis()>throttle_ms) {
@@ -392,6 +410,7 @@ where
                         set_param(
                             &mut prod,
                             &mut effect_params,
+                            &mut effect_wetness,
                             current_effect,
                             current_param,
                             slider,
@@ -399,6 +418,7 @@ where
                         redraw(
                             &mode,
                             &effect_stack,
+                            &effect_wetness,
                             &effect_params,
                             &effect_bank,
                             &current_effect,
@@ -425,6 +445,7 @@ where
                     add_effect(
                         &mut prod,
                         &mut effect_stack,
+                        &mut effect_wetness,
                         &mut effect_params,
                         effect_bank[current_to_add]
                     );
@@ -441,6 +462,7 @@ where
             redraw(
                 &mode,
                 &effect_stack,
+                &effect_wetness,
                 &effect_params,
                 &effect_bank,
                 &current_effect,
