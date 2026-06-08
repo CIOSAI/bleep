@@ -125,6 +125,8 @@ impl Player {
                     self.effect_wetness.push(1.0);
                 },
                 AudioCommand::SetParam(index, key, value) => {
+                    // TODO: interpolate to this value smoothly across a few samples
+                    // to avoid the click
                     if key>=effect::MAXIMUM_PARAM_INDEX+1 { return };
                     if index>=self.effect_stack.len() { return };
                     if key==0 {
