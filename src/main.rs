@@ -15,6 +15,7 @@ use ringbuf::{
 };
 use device_query::{DeviceQuery, DeviceState, Keycode};
 
+mod util;
 mod effect;
 
 #[derive(Parser, Debug)]
@@ -135,8 +136,10 @@ impl Player {
                 },
             }
         }
-        for frame in data.chunks_mut(channels as usize) {
-            for sample in 0..channels {
+
+        for chunk in data.chunks_mut(util::CHUNK_SIZE) {
+            let mut signal = [0.0;util::CHUNK_SIZE];
+            for i in 0..util::CHUNK_SIZE {
                 let mut accum:f32 = 0.0;
                 self.playing.retain_mut(|sound| {
                     match self.cached_sounds.get(&sound.note_pitch) {
@@ -154,22 +157,23 @@ impl Player {
                         None => { false }
                     }
                 });
-
-                for (i, effect) in self.effect_stack.iter_mut().enumerate() {
-                    let wetness = self.effect_wetness[i];
-                    let wet_signal = (effect.definition.apply)(
-                        &sample_rate,
-                        effect.data.params,
-                        &mut effect.data.buffer,
-                        &mut effect.data.buffer_pointer,
-                        accum
-                    );
-                    accum = accum*(1.0-wetness) + wet_signal*wetness;
+                signal[i] = accum;
+            }
+            for (i, effect) in self.effect_stack.iter_mut().enumerate() {
+                let wetness = self.effect_wetness[i];
+                let wet_signal:[f32;util::CHUNK_SIZE] = (effect.definition.apply)(
+                    &sample_rate,
+                    effect.data.params,
+                    &mut effect.data.buffer,
+                    &mut effect.data.buffer_pointer,
+                    &signal,
+                );
+                for i in 0..util::CHUNK_SIZE {
+                    signal[i] = signal[i]*(1.0-wetness)+wet_signal[i]*wetness;
                 }
-
-                accum = accum.clamp(-1.0, 1.0);
-
-                frame[sample as usize] = Sample::from_sample(accum);
+            }
+            for i in 0..util::CHUNK_SIZE {
+                chunk[i] = Sample::from_sample(signal[i].clamp(-1.0, 1.0));
             }
         }
     }

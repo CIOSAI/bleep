@@ -1,3 +1,5 @@
+use crate::util;
+
 pub const BUFFER_SIZE:usize = 1<<16;
 pub const MAXIMUM_PARAM_INDEX:usize = 64;
 pub struct EffectDefinition {
@@ -9,8 +11,8 @@ pub struct EffectDefinition {
         [f32; MAXIMUM_PARAM_INDEX], 
         &mut [f32; BUFFER_SIZE], 
         &mut usize, 
-        f32,
-    ) -> f32,
+        &[f32;util::CHUNK_SIZE],
+    ) -> [f32;util::CHUNK_SIZE],
     pub init: fn() -> EffectData,
 }
 pub struct EffectData {
@@ -42,20 +44,25 @@ pub const DELAY:EffectDefinition = EffectDefinition {
         params:[f32; MAXIMUM_PARAM_INDEX], 
         buffer: &mut [f32; BUFFER_SIZE], 
         pointer: &mut usize, 
-        input: f32
+        input: &[f32;util::CHUNK_SIZE]
     | {
-        let mut accum = input;
+        let mut result = [0.0;util::CHUNK_SIZE];
+        for i in 0..util::CHUNK_SIZE {
+            let mut accum = input[i];
 
-        // is sample_rate ever large enough to have issues with floating point precision?
-        let samples_of_time = 2.max(BUFFER_SIZE.min(((params[1]*(*sample_rate as f32)) as usize)*2));
-        let delay_sound = buffer[(*pointer+1)%samples_of_time];
+            // is sample_rate ever large enough to have issues with floating point precision?
+            let samples_of_time = 2.max(BUFFER_SIZE.min(((params[1]*(*sample_rate as f32)) as usize)*2));
+            let delay_sound = buffer[(*pointer+1)%samples_of_time];
 
-        accum += delay_sound*params[0];
+            accum += delay_sound*params[0];
 
-        buffer[*pointer] = accum;
-        *pointer = (*pointer + 1)%samples_of_time;
+            buffer[*pointer] = accum;
+            *pointer = (*pointer + 1)%samples_of_time;
 
-        accum 
+            result[i] = accum;
+        }
+
+        result
     },
     init: || {
         let mut a = [0.0;MAXIMUM_PARAM_INDEX];
@@ -83,9 +90,13 @@ pub const HARDCLIP:EffectDefinition = EffectDefinition {
         params:[f32; MAXIMUM_PARAM_INDEX], 
         _buffer: &mut [f32; BUFFER_SIZE], 
         _pointer: &mut usize, 
-        input: f32
+        input: &[f32;util::CHUNK_SIZE]
     | {
-        (input*params[0]*64.0).clamp(-1.0, 1.0)*params[1]
+        let mut result = [0.0;util::CHUNK_SIZE];
+        for i in 0..util::CHUNK_SIZE {
+            result[i] = (input[i]*params[0]*64.0).clamp(-1.0, 1.0)*params[1]
+        }
+        result
     },
     init: || {
         let mut a = [0.0;MAXIMUM_PARAM_INDEX];
