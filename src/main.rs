@@ -199,8 +199,7 @@ impl Instrument {
     }
 
     pub fn new() -> Self {
-        // 32 slots for audio commands
-        let ring = HeapRb::<AudioCommand>::new(32);
+        let ring = HeapRb::<AudioCommand>::new(64);
         let (producer, consumer) = ring.split();
 
         Self {
