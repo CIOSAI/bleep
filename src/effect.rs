@@ -109,3 +109,40 @@ pub const HARDCLIP:EffectDefinition = EffectDefinition {
         }
     }
 };
+
+pub const PAN:EffectDefinition = EffectDefinition {
+    title: "panning",
+    param_names: {
+        let mut a = ["";MAXIMUM_PARAM_INDEX];
+        a[0] = "pan";
+        a
+    },
+    param_count: 1,
+    apply: |
+        _sample_rate: &u32,
+        params:[f32; MAXIMUM_PARAM_INDEX], 
+        _buffer: &mut [f32; BUFFER_SIZE], 
+        _pointer: &mut usize, 
+        input: &[f32;util::CHUNK_SIZE]
+    | {
+        let mut result = [0.0;util::CHUNK_SIZE];
+        // TODO: there may be a better way to write this math
+        let direct = [if params[0]<0.5 {params[0]+0.5} else {2.0-params[0]*2.0}, 
+                      if params[0]<0.5 {params[0]*2.0} else {1.5-params[0]}];
+        let opposite = [(0.5-params[0]).max(0.0), (params[0]-0.5).max(0.0)];
+        for i in 0..(util::CHUNK_SIZE/2) {
+            result[i*2+0] = input[i*2+0]*direct[0] + input[i*2+1]*opposite[0];
+            result[i*2+1] = input[i*2+0]*opposite[1] + input[i*2+1]*direct[1];
+        }
+        result
+    },
+    init: || {
+        let mut a = [0.0;MAXIMUM_PARAM_INDEX];
+        a[0] = 0.5;
+        EffectData {
+            params: a,
+            buffer: [0.0; BUFFER_SIZE],
+            buffer_pointer: 0,
+        }
+    }
+};
