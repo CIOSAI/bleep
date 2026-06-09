@@ -408,7 +408,8 @@ where
                     current_param = usize::min(current_param+1, effect_params[current_effect].len()+1);
                 }
                 
-                if last_sent_slider.elapsed().is_ok_and(|dur| dur.as_millis()>throttle_ms) {
+                if !effect_stack.is_empty() && last_sent_slider.elapsed()
+                    .is_ok_and(|dur| dur.as_millis()>throttle_ms) {
                     let mouse = device_reader.get_mouse().coords;
                     // only change values when it's on the top side
                     if mouse.1<120 {
