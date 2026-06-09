@@ -282,6 +282,7 @@ where
     let mut effect_params:Vec<Vec<f32>> = Vec::new();
     let mut effect_wetness:Vec<f32> = Vec::new();
 
+    // TODO: refact this, too many stuff to lend into the closure
     let redraw = |
         mode: &Modes,
         effect_stack: &Vec<&'static effect::EffectDefinition>,
