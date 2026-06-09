@@ -1,4 +1,5 @@
 use crate::util;
+use std::f32::consts::TAU;
 
 pub const BUFFER_SIZE:usize = 1<<16;
 pub const MAXIMUM_PARAM_INDEX:usize = 64;
@@ -139,6 +140,75 @@ pub const PAN:EffectDefinition = EffectDefinition {
     init: || {
         let mut a = [0.0;MAXIMUM_PARAM_INDEX];
         a[0] = 0.5;
+        EffectData {
+            params: a,
+            buffer: [0.0; BUFFER_SIZE],
+            buffer_pointer: 0,
+        }
+    }
+};
+
+// well i guess this is not how youd do a EQ
+pub const EQ:EffectDefinition = EffectDefinition {
+    title: "eq",
+    param_names: {
+        let mut a = ["";MAXIMUM_PARAM_INDEX];
+        a[0] = "cut off";
+        a[1] = "lp-band-hp";
+        a[2] = "intensity";
+        a
+    },
+    param_count: 3,
+    apply: |
+        _sample_rate: &u32,
+        params:[f32; MAXIMUM_PARAM_INDEX], 
+        _buffer: &mut [f32; BUFFER_SIZE], 
+        _pointer: &mut usize, 
+        input: &[f32;util::CHUNK_SIZE]
+    | {
+        const FREQ_BOUND:(f32, f32) = (20.0, 20000.0);
+        const BANDS:usize = 256;
+
+        let mut spectrum = [0.0;BANDS];
+        for band in 0..BANDS {
+            let prog = (band as f32)/(BANDS as f32);
+            let f = FREQ_BOUND.0.powf(
+                1.0 + (FREQ_BOUND.1.log(FREQ_BOUND.0)-1.0)*prog
+            );
+
+            for i in 0..(util::CHUNK_SIZE/64) {
+                let angle = ((i*64) as f32)*f*TAU/(*_sample_rate as f32);
+                spectrum[band] += [angle.cos(), angle.sin()].iter()
+                    .map(|x| x*input[i*64])
+                    .fold(0.0, |acc, x| acc+x.powi(2))
+                    .sqrt();
+            }
+
+            spectrum[band] /= (util::CHUNK_SIZE/64) as f32;
+        }
+        
+        let mut result = [0.0;util::CHUNK_SIZE];
+        for band in 0..BANDS {
+            let prog = (band as f32)/(BANDS as f32);
+            let f = FREQ_BOUND.0.powf(
+                1.0 + (FREQ_BOUND.1.log(FREQ_BOUND.0)-1.0)*prog
+            );
+            
+            for i in 0..(util::CHUNK_SIZE/2) {
+                let wave = (((i*2) as f32)*f*TAU/(*_sample_rate as f32)).sin()*spectrum[band];
+                result[i*2] += wave*0.02;
+                result[i*2+1] += wave*0.02;
+            }
+            
+        }
+
+        result
+    },
+    init: || {
+        let mut a = [0.0;MAXIMUM_PARAM_INDEX];
+        a[0] = 0.5;
+        a[1] = 0.5;
+        a[2] = 0.0;
         EffectData {
             params: a,
             buffer: [0.0; BUFFER_SIZE],
