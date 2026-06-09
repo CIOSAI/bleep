@@ -274,7 +274,7 @@ where
     let mut last_sent_slider = time::SystemTime::now();
     let mut current_effect:usize = 0;
     let mut current_param:usize = 0;
-    let effect_bank = [&effect::DELAY, &effect::HARDCLIP, &effect::PAN];
+    let effect_bank = [&effect::DELAY, &effect::HARDCLIP, &effect::PAN, &effect::LOWPASS, &effect::HIGHPASS];
     let mut current_to_add:usize = 0;
     
     let mut mode = Modes::PERFORM;
@@ -289,7 +289,7 @@ where
         effect_stack: &Vec<&'static effect::EffectDefinition>,
         effect_wetness: &Vec<f32>,
         effect_params: &Vec<Vec<f32>>,
-        effect_bank: &[&effect::EffectDefinition; 3],
+        effect_bank: &[&effect::EffectDefinition; 5],
         current_effect: &usize,
         current_param: &usize,
         current_to_add: &usize,

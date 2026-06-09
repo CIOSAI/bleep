@@ -216,3 +216,85 @@ pub const EQ:EffectDefinition = EffectDefinition {
         }
     }
 };
+
+pub const LOWPASS:EffectDefinition = EffectDefinition {
+    title: "lowpass filter",
+    param_names: {
+        let mut a = ["";MAXIMUM_PARAM_INDEX];
+        a[0] = "cut off";
+        a
+    },
+    param_count: 1,
+    apply: |
+        _sample_rate: &u32,
+        params:[f32; MAXIMUM_PARAM_INDEX], 
+        _buffer: &mut [f32; BUFFER_SIZE], 
+        _pointer: &mut usize, 
+        input: &[f32;util::CHUNK_SIZE]
+    | {
+        let mut result = [0.0;util::CHUNK_SIZE];
+
+        let mut values = [input[0], input[1]];
+        result[0] = values[0];
+        result[1] = values[1];
+        for i in 1..(util::CHUNK_SIZE/2) {
+            let lerp = |a:f32,b:f32,c:f32| a*(1.0-c)+(b-a)*c;
+            values[0] = lerp(values[0], input[i*2], params[0]);
+            values[1] = lerp(values[1], input[i*2+1], params[0]);
+            result[i*2] = values[0];
+            result[i*2+1] = values[1];
+        }
+
+        result
+    },
+    init: || {
+        let mut a = [0.0;MAXIMUM_PARAM_INDEX];
+        a[0] = 0.5;
+        EffectData {
+            params: a,
+            buffer: [0.0; BUFFER_SIZE],
+            buffer_pointer: 0,
+        }
+    }
+};
+
+pub const HIGHPASS:EffectDefinition = EffectDefinition {
+    title: "highpass filter",
+    param_names: {
+        let mut a = ["";MAXIMUM_PARAM_INDEX];
+        a[0] = "cut off";
+        a
+    },
+    param_count: 1,
+    apply: |
+        _sample_rate: &u32,
+        params:[f32; MAXIMUM_PARAM_INDEX], 
+        _buffer: &mut [f32; BUFFER_SIZE], 
+        _pointer: &mut usize, 
+        input: &[f32;util::CHUNK_SIZE]
+    | {
+        let mut result = [0.0;util::CHUNK_SIZE];
+
+        let mut values = [input[0], input[1]];
+        result[0] = values[0];
+        result[1] = values[1];
+        for i in 1..(util::CHUNK_SIZE/2) {
+            let lerp = |a:f32,b:f32,c:f32| a*(1.0-c)+(b-a)*c;
+            values[0] = lerp(values[0], input[i*2], params[0]);
+            values[1] = lerp(values[1], input[i*2+1], params[0]);
+            result[i*2] = input[i*2]-values[0];
+            result[i*2+1] = input[i*2+1]-values[1];
+        }
+
+        result
+    },
+    init: || {
+        let mut a = [0.0;MAXIMUM_PARAM_INDEX];
+        a[0] = 0.5;
+        EffectData {
+            params: a,
+            buffer: [0.0; BUFFER_SIZE],
+            buffer_pointer: 0,
+        }
+    }
+};
