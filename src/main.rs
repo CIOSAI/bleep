@@ -125,8 +125,9 @@ impl Player {
                     self.effect_wetness.push(1.0);
                 },
                 AudioCommand::SetParam(index, key, value) => {
-                    // TODO: interpolate to this value smoothly across a few samples
-                    // to avoid the click
+                    // TODO: noise spike removal:
+                    // https://ccrma.stanford.edu/%7Ejos/filters/Examples_Digital_Filters.html
+                    // > Another nonlinear filter example is the median smoother of order which assigns the middle value of input samples centered about time to the output at time . It is useful for ``outlier'' elimination. For example, it will reject isolated noise spikes, and preserve steps. 
                     if key>=effect::MAXIMUM_PARAM_INDEX+1 { return };
                     if index>=self.effect_stack.len() { return };
                     if key==0 {
