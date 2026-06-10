@@ -1,5 +1,5 @@
 use crate::util;
-use std::f32::consts::TAU;
+use std::f32::consts::{TAU, PI};
 
 pub const BUFFER_SIZE:usize = 1<<16;
 pub const MAXIMUM_PARAM_INDEX:usize = 64;
@@ -232,17 +232,24 @@ pub const LOWPASS:EffectDefinition = EffectDefinition {
         _pointer: &mut usize, 
         input: &[f32;util::CHUNK_SIZE]
     | {
+        let f = params[0]*20000.0*PI/(*_sample_rate as f32);
+        let d = (f/(f+1.0)).tan();
         let mut result = [0.0;util::CHUNK_SIZE];
 
-        let mut values = [input[0], input[1]];
-        result[0] = values[0];
-        result[1] = values[1];
+        let mut prev = [input[0], input[1]];
+        result[0] = prev[0];
+        result[1] = prev[1];
         for i in 1..(util::CHUNK_SIZE/2) {
-            let lerp = |a:f32,b:f32,c:f32| a*(1.0-c)+(b-a)*c;
-            values[0] = lerp(values[0], input[i*2], params[0]);
-            values[1] = lerp(values[1], input[i*2+1], params[0]);
-            result[i*2] = values[0];
-            result[i*2+1] = values[1];
+            let d = [d*(input[i*2]-prev[0]), d*(input[i*2+1]-prev[1])];
+
+            prev[0] += d[0];
+            prev[1] += d[1];
+
+            result[i*2] = prev[0];
+            result[i*2+1] = prev[1];
+
+            prev[0] += d[0];
+            prev[1] += d[1];
         }
 
         result
