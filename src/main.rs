@@ -227,6 +227,20 @@ pub enum Modes {
     EDIT,
 }
 
+const EFFECT_BANK:[&effect::EffectDefinition;5] = [&effect::DELAY, &effect::HARDCLIP, &effect::PAN, &effect::LOWPASS, &effect::HIGHPASS];
+
+struct GUI {
+    throttle_ms: u128,
+    last_sent_slider: time::SystemTime,
+    current_effect: usize,
+    current_param: usize,
+    current_to_add: usize,
+    mode: Modes,
+    effect_stack: Vec<&'static effect::EffectDefinition>,
+    effect_params: Vec<Vec<f32>>,
+    effect_wetness: Vec<f32>,
+}
+
 pub fn run<T>(device: &cpal::Device, config: &cpal::StreamConfig) -> Result<(), anyhow::Error>
 where
     T: SizedSample + FromSample<f32>,
@@ -270,30 +284,31 @@ where
     piano.insert(Keycode::U, AudioCommand::Bell(11));
     piano.insert(Keycode::I, AudioCommand::Bell(12));
 
-    let throttle_ms = 50;
-    let mut last_sent_slider = time::SystemTime::now();
-    let mut current_effect:usize = 0;
-    let mut current_param:usize = 0;
-    let effect_bank = [&effect::DELAY, &effect::HARDCLIP, &effect::PAN, &effect::LOWPASS, &effect::HIGHPASS];
-    let mut current_to_add:usize = 0;
-    
-    let mut mode = Modes::PERFORM;
+    let mut gui = GUI {
+        throttle_ms: 50,
+        last_sent_slider: time::SystemTime::now(),
+        current_effect: 0,
+        current_param: 0,
+        current_to_add: 0,
+        mode: Modes::PERFORM,
+        effect_stack: Vec::new(),
+        effect_params: Vec::new(),
+        effect_wetness: Vec::new(),
+    };
 
-    let mut effect_stack:Vec<&'static effect::EffectDefinition> = Vec::new();
-    let mut effect_params:Vec<Vec<f32>> = Vec::new();
-    let mut effect_wetness:Vec<f32> = Vec::new();
+    let redraw = |gui: &GUI| {
+        let GUI {
+            throttle_ms: _,
+            last_sent_slider: _,
+            current_effect,
+            current_param,
+            current_to_add,
+            mode,
+            effect_stack,
+            effect_params,
+            effect_wetness,
+        } = gui;
 
-    // TODO: refact this, too many stuff to lend into the closure
-    let redraw = |
-        mode: &Modes,
-        effect_stack: &Vec<&'static effect::EffectDefinition>,
-        effect_wetness: &Vec<f32>,
-        effect_params: &Vec<Vec<f32>>,
-        effect_bank: &[&effect::EffectDefinition; 5],
-        current_effect: &usize,
-        current_param: &usize,
-        current_to_add: &usize,
-    | {
         print!("\n\n\n");
         println!("TAB switch mode | h ← | k ↑ | j | ↓ l → | mouseX effect slider(hug the top side)");
         match mode {
@@ -321,35 +336,27 @@ where
                 }
                 println!("");
                 println!("press enter to add:");
-                for i in 0..effect_bank.len() {
+                for i in 0..EFFECT_BANK.len() {
                     let hovering = i==*current_to_add;
                     println!("{}\t{}",
                              if hovering {">"} else {" "},
-                             effect_bank[i].title
+                             EFFECT_BANK[i].title
                     );
                 }
             },
         };
     };
 
-    redraw(
-        &mode,
-        &effect_stack,
-        &effect_wetness,
-        &effect_params,
-        &effect_bank,
-        &current_effect,
-        &current_param,
-        &current_to_add,
-    );
+    redraw(&gui);
 
     let add_effect = |
         prod: &mut Caching<Arc<SharedRb<Heap<AudioCommand>>>, true, false>,
-        effects: &mut Vec<&'static effect::EffectDefinition>,
-        wetness: &mut Vec<f32>,
-        params: &mut Vec<Vec<f32>>,
+        gui: &mut GUI,
         to_add: &'static effect::EffectDefinition,
     | {
+        let effects = &mut gui.effect_stack;
+        let wetness = &mut gui.effect_wetness;
+        let params = &mut gui.effect_params;
         effects.push(to_add);
         wetness.push(1.0);
         let default_values = (to_add.init)().params;
@@ -361,12 +368,14 @@ where
 
     let set_param = |
         prod: &mut Caching<Arc<SharedRb<Heap<AudioCommand>>>, true, false>,
-        params: &mut Vec<Vec<f32>>,
-        wetness: &mut Vec<f32>,
-        which_effect: usize,
-        which_param: usize,
+        gui: &mut GUI,
         to_value: f32,
     | {
+        let params = &mut gui.effect_params;
+        let wetness = &mut gui.effect_wetness;
+        let which_effect = gui.current_effect;
+        let which_param = gui.current_param;
+
         let _ = prod.try_push(
             AudioCommand::SetParam(which_effect, which_param, to_value)
         );
@@ -394,89 +403,67 @@ where
             }
         }
 
-        match mode {
+        match gui.mode {
             Modes::PERFORM => {
                 if just_pressed.contains(&Keycode::K) {
-                    current_effect = current_effect.saturating_sub(1);
+                    gui.current_effect = gui.current_effect.saturating_sub(1);
                 }
                 if just_pressed.contains(&Keycode::J) {
-                    current_effect = usize::min(current_effect+1, effect_params.len());
+                    gui.current_effect = usize::min(gui.current_effect+1, gui.effect_params.len());
                 }
                 if just_pressed.contains(&Keycode::H) {
-                    current_param = current_param.saturating_sub(1);
+                    gui.current_param = gui.current_param.saturating_sub(1);
                 }
                 if just_pressed.contains(&Keycode::L) {
-                    current_param = usize::min(current_param+1, effect_params[current_effect].len()+1);
+                    gui.current_param = usize::min(gui.current_param+1, gui.effect_params[gui.current_effect].len()+1);
                 }
                 
-                if !effect_stack.is_empty() && last_sent_slider.elapsed()
-                    .is_ok_and(|dur| dur.as_millis()>throttle_ms) {
+                if !gui.effect_stack.is_empty() && gui.last_sent_slider.elapsed()
+                    .is_ok_and(|dur| dur.as_millis()>gui.throttle_ms) {
                     let mouse = device_reader.get_mouse().coords;
                     // only change values when it's on the top side
                     if mouse.1<120 {
                         let slider = (mouse.0 as f32) / 1920.0;
                         set_param(
                             &mut prod,
-                            &mut effect_params,
-                            &mut effect_wetness,
-                            current_effect,
-                            current_param,
+                            &mut gui,
                             slider,
                         );
-                        redraw(
-                            &mode,
-                            &effect_stack,
-                            &effect_wetness,
-                            &effect_params,
-                            &effect_bank,
-                            &current_effect,
-                            &current_param,
-                            &current_to_add,
-                        );
-                        last_sent_slider = time::SystemTime::now();
+                        redraw(&gui);
+                        gui.last_sent_slider = time::SystemTime::now();
                     }
                 }
 
                 if just_pressed.contains(&Keycode::Tab) {
-                    mode = Modes::EDIT;
+                    gui.mode = Modes::EDIT;
                 }
             },
             Modes::EDIT => {
                 if just_pressed.contains(&Keycode::K) {
-                    current_to_add = current_to_add.saturating_sub(1);
+                    gui.current_to_add = gui.current_to_add.saturating_sub(1);
                 }
                 if just_pressed.contains(&Keycode::J) {
-                    current_to_add = usize::min(current_to_add+1, effect_bank.len());
+                    gui.current_to_add = usize::min(gui.current_to_add+1, EFFECT_BANK.len());
                 }
 
                 if just_pressed.contains(&Keycode::Enter) {
+                    let current_to_add = gui.current_to_add;
                     add_effect(
                         &mut prod,
-                        &mut effect_stack,
-                        &mut effect_wetness,
-                        &mut effect_params,
-                        effect_bank[current_to_add]
+                        &mut gui,
+                        EFFECT_BANK[current_to_add]
                     );
                 }
 
                 if just_pressed.contains(&Keycode::Tab) {
-                    mode = Modes::PERFORM;
+                    gui.mode = Modes::PERFORM;
                 }
             },
         };
 
         // stuff was entered to the terminal, redraw
         if !just_pressed.is_empty() {
-            redraw(
-                &mode,
-                &effect_stack,
-                &effect_wetness,
-                &effect_params,
-                &effect_bank,
-                &current_effect,
-                &current_param,
-                &current_to_add,
-            );
+            redraw(&gui);
         }
 
         if keys.contains(&Keycode::Escape) {
