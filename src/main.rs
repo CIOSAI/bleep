@@ -1,4 +1,5 @@
 // with much help from https://whoisryosuke.com/blog/2026/creating-a-daw-in-rust/
+// rust audio discord
 
 use core::f32;
 use std::collections::HashMap;
@@ -17,6 +18,10 @@ use device_query::{DeviceQuery, DeviceState, Keycode};
 
 mod util;
 mod effect;
+
+const EFFECT_BANK:[&effect::EffectDefinition;5] = [&effect::DELAY, &effect::HARDCLIP, &effect::PAN, &effect::LOWPASS, &effect::HIGHPASS];
+const SMOOTHING_SECONDS:f32 = 0.023;
+const DECLICK_SIZE: usize = 8;
 
 #[derive(Parser, Debug)]
 #[command(version, about = "CPAL beep example", long_about = None)]
@@ -82,6 +87,9 @@ pub struct Player {
     cached_sounds: HashMap<i8, Arc<Vec<f32>>>,
     playing: Vec<OneSound>,
     consumer: Caching<Arc<SharedRb<Heap<AudioCommand>>>, false, true>,
+    // put sounds in here first, for doing whatever final adjustment before streaming
+    buffer_region: [f32;util::CHUNK_SIZE*2],
+    buffer_region_pointer: usize,
     effect_stack: Vec<effect::Effect>,
     effect_wetness: Vec<f32>,
 }
@@ -125,9 +133,6 @@ impl Player {
                     self.effect_wetness.push(1.0);
                 },
                 AudioCommand::SetParam(index, key, value) => {
-                    // TODO: noise spike removal:
-                    // https://ccrma.stanford.edu/%7Ejos/filters/Examples_Digital_Filters.html
-                    // > Another nonlinear filter example is the median smoother of order which assigns the middle value of input samples centered about time to the output at time . It is useful for ``outlier'' elimination. For example, it will reject isolated noise spikes, and preserve steps. 
                     if key>=effect::MAXIMUM_PARAM_INDEX+1 { return };
                     if index>=self.effect_stack.len() { return };
                     if key==0 {
@@ -140,9 +145,10 @@ impl Player {
             }
         }
 
-        for chunk in data.chunks_mut(util::CHUNK_SIZE) {
+        for chunk in data.chunks(util::CHUNK_SIZE) {
+            // create sound
             let mut signal = [0.0;util::CHUNK_SIZE];
-            for i in 0..util::CHUNK_SIZE {
+            for i in 0..chunk.len() {
                 let mut accum:f32 = 0.0;
                 self.playing.retain_mut(|sound| {
                     match self.cached_sounds.get(&sound.note_pitch) {
@@ -162,6 +168,7 @@ impl Player {
                 });
                 signal[i] = accum;
             }
+            // effects
             for (i, effect) in self.effect_stack.iter_mut().enumerate() {
                 let wetness = self.effect_wetness[i];
                 let wet_signal:[f32;util::CHUNK_SIZE] = (effect.definition.apply)(
@@ -175,9 +182,35 @@ impl Player {
                     signal[i] = signal[i]*(1.0-wetness)+wet_signal[i]*wetness;
                 }
             }
-            for i in 0..util::CHUNK_SIZE {
-                chunk[i] = Sample::from_sample(signal[i].clamp(-1.0, 1.0));
+            let temp = self.buffer_region_pointer;
+            // write
+            for i in 0..chunk.len() {
+                self.buffer_region[self.buffer_region_pointer] = signal[i].clamp(-1.0, 1.0);
+                self.buffer_region_pointer = (self.buffer_region_pointer+1) % self.buffer_region.len();
             }
+
+            // declick
+            let coeff_b = (-1.0 / (SMOOTHING_SECONDS * (sample_rate as f32)).max(f32::MIN)).exp();
+
+            let declick_start = if temp>=DECLICK_SIZE/2 {
+                (temp - DECLICK_SIZE/2) % self.buffer_region.len()
+            } else { self.buffer_region.len().strict_add_signed((temp as isize)-((DECLICK_SIZE/2) as isize)) };
+
+            let mut declick_samples = [self.buffer_region[declick_start],
+                                       self.buffer_region[declick_start+1]
+            ];
+            for i in (1..(DECLICK_SIZE/2)).map(|i| declick_start+i*2) {
+                let smooth = |a,b| a*(1.0-coeff_b)+b*coeff_b;
+                declick_samples[0] = smooth(declick_samples[0], self.buffer_region[i % self.buffer_region.len()]);
+                declick_samples[0] = smooth(declick_samples[1], self.buffer_region[(i+1) % self.buffer_region.len()]);
+                self.buffer_region[i % self.buffer_region.len()] = declick_samples[0];
+                self.buffer_region[(i+1) % self.buffer_region.len()] = declick_samples[1];
+            }
+        }
+
+        // stream out
+        for i in 0..data.len() {
+            data[i] = Sample::from_sample(self.buffer_region[self.buffer_region_pointer+i]);
         }
     }
 }
@@ -215,6 +248,8 @@ impl Instrument {
                 cached_sounds: HashMap::new(),
                 playing: Vec::new(),
                 consumer: consumer,
+                buffer_region: [0.0;util::CHUNK_SIZE*2],
+                buffer_region_pointer: 0,
                 effect_stack: Vec::new(),
                 effect_wetness: Vec::new(),
             }
@@ -226,8 +261,6 @@ pub enum Modes {
     PERFORM,
     EDIT,
 }
-
-const EFFECT_BANK:[&effect::EffectDefinition;5] = [&effect::DELAY, &effect::HARDCLIP, &effect::PAN, &effect::LOWPASS, &effect::HIGHPASS];
 
 struct GUI {
     throttle_ms: u128,
