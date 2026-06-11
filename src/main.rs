@@ -22,6 +22,7 @@ mod effect;
 const EFFECT_BANK:[&effect::EffectDefinition;5] = [&effect::DELAY, &effect::HARDCLIP, &effect::PAN, &effect::LOWPASS, &effect::HIGHPASS];
 const SMOOTHING_SECONDS:f32 = 0.023;
 const DECLICK_SIZE: usize = 8;
+const BUFFER_REGION_SIZE: usize = 2048;
 
 #[derive(Parser, Debug)]
 #[command(version, about = "CPAL beep example", long_about = None)]
@@ -88,7 +89,7 @@ pub struct Player {
     playing: Vec<OneSound>,
     consumer: Caching<Arc<SharedRb<Heap<AudioCommand>>>, false, true>,
     // put sounds in here first, for doing whatever final adjustment before streaming
-    buffer_region: [f32;util::CHUNK_SIZE*2],
+    buffer_region: [f32;BUFFER_REGION_SIZE],
     buffer_region_pointer: usize,
     effect_stack: Vec<effect::Effect>,
     effect_wetness: Vec<f32>,
@@ -186,14 +187,14 @@ impl Player {
             // write
             for i in 0..chunk.len() {
                 self.buffer_region[self.buffer_region_pointer] = signal[i].clamp(-1.0, 1.0);
-                self.buffer_region_pointer = (self.buffer_region_pointer+1) % self.buffer_region.len();
+                self.buffer_region_pointer = (self.buffer_region_pointer+1) % BUFFER_REGION_SIZE;
             }
 
             // declick
             let coeff_b = (-1.0 / (SMOOTHING_SECONDS * (sample_rate as f32)).max(f32::MIN)).exp();
 
             let declick_start = if temp>=DECLICK_SIZE/2 {
-                (temp - DECLICK_SIZE/2) % self.buffer_region.len()
+                (temp - DECLICK_SIZE/2) % BUFFER_REGION_SIZE
             } else { self.buffer_region.len().strict_add_signed((temp as isize)-((DECLICK_SIZE/2) as isize)) };
 
             let mut declick_samples = [self.buffer_region[declick_start],
@@ -201,10 +202,10 @@ impl Player {
             ];
             for i in (1..(DECLICK_SIZE/2)).map(|i| declick_start+i*2) {
                 let smooth = |a,b| a*(1.0-coeff_b)+b*coeff_b;
-                declick_samples[0] = smooth(declick_samples[0], self.buffer_region[i % self.buffer_region.len()]);
-                declick_samples[0] = smooth(declick_samples[1], self.buffer_region[(i+1) % self.buffer_region.len()]);
-                self.buffer_region[i % self.buffer_region.len()] = declick_samples[0];
-                self.buffer_region[(i+1) % self.buffer_region.len()] = declick_samples[1];
+                declick_samples[0] = smooth(declick_samples[0], self.buffer_region[i % BUFFER_REGION_SIZE]);
+                declick_samples[0] = smooth(declick_samples[1], self.buffer_region[(i+1) % BUFFER_REGION_SIZE]);
+                self.buffer_region[i % BUFFER_REGION_SIZE] = declick_samples[0];
+                self.buffer_region[(i+1) % BUFFER_REGION_SIZE] = declick_samples[1];
             }
         }
 
@@ -248,7 +249,7 @@ impl Instrument {
                 cached_sounds: HashMap::new(),
                 playing: Vec::new(),
                 consumer: consumer,
-                buffer_region: [0.0;util::CHUNK_SIZE*2],
+                buffer_region: [0.0;BUFFER_REGION_SIZE],
                 buffer_region_pointer: 0,
                 effect_stack: Vec::new(),
                 effect_wetness: Vec::new(),
