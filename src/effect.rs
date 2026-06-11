@@ -228,7 +228,7 @@ pub const LOWPASS:EffectDefinition = EffectDefinition {
     apply: |
         _sample_rate: &u32,
         params:[f32; MAXIMUM_PARAM_INDEX], 
-        _buffer: &mut [f32; BUFFER_SIZE], 
+        buffer: &mut [f32; BUFFER_SIZE],
         _pointer: &mut usize, 
         input: &[f32;util::CHUNK_SIZE]
     | {
@@ -236,10 +236,8 @@ pub const LOWPASS:EffectDefinition = EffectDefinition {
         let d = (f/(f+1.0)).tan();
         let mut result = [0.0;util::CHUNK_SIZE];
 
-        let mut prev = [input[0], input[1]];
-        result[0] = prev[0];
-        result[1] = prev[1];
-        for i in 1..(util::CHUNK_SIZE/2) {
+        let mut prev = [buffer[0], buffer[1]];
+        for i in 0..(util::CHUNK_SIZE/2) {
             let d = [d*(input[i*2]-prev[0]), d*(input[i*2+1]-prev[1])];
 
             prev[0] += d[0];
@@ -250,6 +248,9 @@ pub const LOWPASS:EffectDefinition = EffectDefinition {
 
             prev[0] += d[0];
             prev[1] += d[1];
+
+            buffer[0] = prev[0]+d[0];
+            buffer[1] = prev[1]+d[1];
         }
 
         result
@@ -276,21 +277,22 @@ pub const HIGHPASS:EffectDefinition = EffectDefinition {
     apply: |
         _sample_rate: &u32,
         params:[f32; MAXIMUM_PARAM_INDEX], 
-        _buffer: &mut [f32; BUFFER_SIZE], 
+        buffer: &mut [f32; BUFFER_SIZE],
         _pointer: &mut usize, 
         input: &[f32;util::CHUNK_SIZE]
     | {
         let mut result = [0.0;util::CHUNK_SIZE];
 
-        let mut values = [input[0], input[1]];
-        result[0] = values[0];
-        result[1] = values[1];
-        for i in 1..(util::CHUNK_SIZE/2) {
+        let mut prev = [buffer[0], buffer[1]];
+        for i in 0..(util::CHUNK_SIZE/2) {
             let lerp = |a:f32,b:f32,c:f32| a*(1.0-c)+(b-a)*c;
-            values[0] = lerp(values[0], input[i*2], params[0]);
-            values[1] = lerp(values[1], input[i*2+1], params[0]);
-            result[i*2] = input[i*2]-values[0];
-            result[i*2+1] = input[i*2+1]-values[1];
+            prev[0] = lerp(prev[0], input[i*2], params[0]);
+            prev[1] = lerp(prev[1], input[i*2+1], params[0]);
+            result[i*2] = input[i*2]-prev[0];
+            result[i*2+1] = input[i*2+1]-prev[1];
+
+            buffer[0] = prev[0];
+            buffer[1] = prev[1];
         }
 
         result
