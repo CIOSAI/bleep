@@ -76,11 +76,12 @@ pub struct OneSound {
     note_pitch: i8,
     position: usize,
 }
-// TODO: allow for removing effects
+
 #[derive(Clone)]
 enum AudioCommand {
     Bell(i8),
     NewEffect(&'static effect::EffectDefinition),
+    DelEffect(usize),
     SetParam(usize,usize,f32),
 }
 
@@ -132,6 +133,10 @@ impl Player {
                         data: (def.init)(),
                     });
                     self.effect_wetness.push(1.0);
+                },
+                AudioCommand::DelEffect(index) => {
+                    self.effect_stack.remove(index);
+                    self.effect_wetness.remove(index);
                 },
                 AudioCommand::SetParam(index, key, value) => {
                     if key>=effect::MAXIMUM_PARAM_INDEX+1 { return };
@@ -268,6 +273,7 @@ struct GUI {
     last_sent_slider: time::SystemTime,
     current_effect: usize,
     current_param: usize,
+    currently_adding: bool,
     current_to_add: usize,
     mode: Modes,
     effect_stack: Vec<&'static effect::EffectDefinition>,
@@ -323,6 +329,7 @@ where
         last_sent_slider: time::SystemTime::now(),
         current_effect: 0,
         current_param: 0,
+        currently_adding: true,
         current_to_add: 0,
         mode: Modes::PERFORM,
         effect_stack: Vec::new(),
@@ -336,6 +343,7 @@ where
             last_sent_slider: _,
             current_effect,
             current_param,
+            currently_adding,
             current_to_add,
             mode,
             effect_stack,
@@ -364,18 +372,21 @@ where
             },
             Modes::EDIT => {
                 println!("EDIT MODE");
-                println!("current effects:");
-                for i in 0..effect_stack.len() {
-                    println!("{}", effect_stack[i].title);
-                }
-                println!("");
-                println!("press enter to add:");
-                for i in 0..EFFECT_BANK.len() {
-                    let hovering = i==*current_to_add;
-                    println!("{}\t{}",
-                             if hovering {">"} else {" "},
-                             EFFECT_BANK[i].title
+                println!("current effect stack:\tavailable effects:");
+                println!("press delete to remove:\tpress enter to add:\n");
+                for i in 0..usize::max(effect_stack.len(),EFFECT_BANK.len()) {
+                    let stack_hovering = (!*currently_adding) && i==*current_effect;
+                    print!("{}\t{}", 
+                             if stack_hovering {">"} else {" "},
+                             if i<effect_stack.len() {effect_stack[i].title} else {""}
                     );
+                    print!("\t");
+                    let bank_hovering = *currently_adding && i==*current_to_add;
+                    print!("{}\t{}",
+                             if bank_hovering {">"} else {" "},
+                             if i<EFFECT_BANK.len() {EFFECT_BANK[i].title} else {""}
+                    );
+                    println!("");
                 }
             },
         };
@@ -398,6 +409,22 @@ where
         for i in 0..to_add.param_count { vec.push(default_values[i]); }
         params.push(vec);
         let _ = prod.try_push(AudioCommand::NewEffect(to_add));
+    };
+
+    let del_effect = |
+        prod: &mut Caching<Arc<SharedRb<Heap<AudioCommand>>>, true, false>,
+        gui: &mut GUI,
+        index: usize,
+    | {
+        let effects = &mut gui.effect_stack;
+        let wetness = &mut gui.effect_wetness;
+        let params = &mut gui.effect_params;
+        if index<=effects.len() {
+            effects.remove(index);
+            wetness.remove(index);
+            params.remove(index);
+            let _ = prod.try_push(AudioCommand::DelEffect(index));
+        }
     };
 
     let set_param = |
@@ -473,20 +500,40 @@ where
                 }
             },
             Modes::EDIT => {
-                if just_pressed.contains(&Keycode::K) {
-                    gui.current_to_add = gui.current_to_add.saturating_sub(1);
+                if just_pressed.contains(&Keycode::H) || just_pressed.contains(&Keycode::L) {
+                    gui.currently_adding = !gui.currently_adding;
                 }
-                if just_pressed.contains(&Keycode::J) {
-                    gui.current_to_add = usize::min(gui.current_to_add+1, EFFECT_BANK.len());
+                if gui.currently_adding {
+                    if just_pressed.contains(&Keycode::K) {
+                        gui.current_to_add = gui.current_to_add.saturating_sub(1);
+                    }
+                    if just_pressed.contains(&Keycode::J) {
+                        gui.current_to_add = usize::min(gui.current_to_add+1, EFFECT_BANK.len());
+                    }
+                    if just_pressed.contains(&Keycode::Enter) {
+                        let current_to_add = gui.current_to_add;
+                        add_effect(
+                            &mut prod,
+                            &mut gui,
+                            EFFECT_BANK[current_to_add]
+                        );
+                    }
                 }
-
-                if just_pressed.contains(&Keycode::Enter) {
-                    let current_to_add = gui.current_to_add;
-                    add_effect(
-                        &mut prod,
-                        &mut gui,
-                        EFFECT_BANK[current_to_add]
-                    );
+                else {
+                    if just_pressed.contains(&Keycode::K) {
+                        gui.current_effect = gui.current_effect.saturating_sub(1);
+                    }
+                    if just_pressed.contains(&Keycode::J) {
+                        gui.current_effect = usize::min(gui.current_effect+1, gui.effect_params.len());
+                    }
+                    if just_pressed.contains(&Keycode::Delete) {
+                        let current_effect = gui.current_effect;
+                        del_effect(
+                            &mut prod,
+                            &mut gui,
+                            current_effect
+                        );
+                    }
                 }
 
                 if just_pressed.contains(&Keycode::Tab) {
