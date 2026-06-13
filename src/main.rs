@@ -80,6 +80,7 @@ pub struct OneSound {
 #[derive(Clone)]
 enum AudioCommand {
     Bell(i8),
+    Saw(i8),
     NewEffect(&'static effect::EffectDefinition),
     DelEffect(usize),
     SetParam(usize,usize,f32),
@@ -125,6 +126,34 @@ impl Player {
                         }
 
                         self.cached_sounds.insert(note_name.clone(), Arc::new(buffer));
+                    }
+                },
+                AudioCommand::Saw(note_name) => {
+                    let temp = note_name.clone()+24;
+                    self.playing.push(OneSound { note_pitch: temp, position: 0 });
+
+                    if !self.cached_sounds.contains_key(&temp) {
+                        let size = (sample_rate/2) * (channels);
+                        let mut buffer:Vec<f32> = Vec::new();
+                        for i in 0..size {
+                            let is_left = i%channels==0;
+                            let t = ((i/channels) as f32)/(sample_rate as f32);
+
+                            let pitch = Instrument::name_to_pitch(&note_name);
+                            let decay = 10.0;
+                            let volume = 0.2;
+
+                            let mut val;
+                            {
+                                let fm = (t * (if is_left {30.0} else {40.0})).sin();
+                                val = (t*pitch+fm*0.3).fract()*2.0-1.0;
+                                val *= f32::exp(-t.fract() * decay) * volume;
+                            }
+
+                            buffer.push(val);
+                        }
+
+                        self.cached_sounds.insert(temp, Arc::new(buffer));
                     }
                 },
                 AudioCommand::NewEffect(def) => {
@@ -310,19 +339,19 @@ where
     let mut pressed:Vec<Keycode> = Vec::new();
 
     let mut piano:HashMap<Keycode, AudioCommand> = HashMap::new();
-    piano.insert(Keycode::Q, AudioCommand::Bell(0));
-    piano.insert(Keycode::Key2, AudioCommand::Bell(1));
-    piano.insert(Keycode::W, AudioCommand::Bell(2));
-    piano.insert(Keycode::Key3, AudioCommand::Bell(3));
-    piano.insert(Keycode::E, AudioCommand::Bell(4));
-    piano.insert(Keycode::R, AudioCommand::Bell(5));
-    piano.insert(Keycode::Key5, AudioCommand::Bell(6));
-    piano.insert(Keycode::T, AudioCommand::Bell(7));
-    piano.insert(Keycode::Key6, AudioCommand::Bell(8));
-    piano.insert(Keycode::Y, AudioCommand::Bell(9));
-    piano.insert(Keycode::Key7, AudioCommand::Bell(10));
-    piano.insert(Keycode::U, AudioCommand::Bell(11));
-    piano.insert(Keycode::I, AudioCommand::Bell(12));
+    piano.insert(Keycode::Q, AudioCommand::Saw(0));
+    piano.insert(Keycode::Key2, AudioCommand::Saw(1));
+    piano.insert(Keycode::W, AudioCommand::Saw(2));
+    piano.insert(Keycode::Key3, AudioCommand::Saw(3));
+    piano.insert(Keycode::E, AudioCommand::Saw(4));
+    piano.insert(Keycode::R, AudioCommand::Saw(5));
+    piano.insert(Keycode::Key5, AudioCommand::Saw(6));
+    piano.insert(Keycode::T, AudioCommand::Saw(7));
+    piano.insert(Keycode::Key6, AudioCommand::Saw(8));
+    piano.insert(Keycode::Y, AudioCommand::Saw(9));
+    piano.insert(Keycode::Key7, AudioCommand::Saw(10));
+    piano.insert(Keycode::U, AudioCommand::Saw(11));
+    piano.insert(Keycode::I, AudioCommand::Saw(12));
 
     let mut gui = GUI {
         throttle_ms: 50,
