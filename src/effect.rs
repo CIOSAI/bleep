@@ -26,11 +26,6 @@ pub struct Effect {
     pub data: EffectData,
 }
 
-// TODO: residual signal from longer delay time
-// delay time used to be 0.8, changes to 0.4
-// in this case the data from 0.4-0.8 are not overwritten
-// later when the delay time moves back to 0.8, it plays
-// sounds from waaay before
 pub const DELAY:EffectDefinition = EffectDefinition {
     title: "delay",
     param_names: {
@@ -47,12 +42,31 @@ pub const DELAY:EffectDefinition = EffectDefinition {
         pointer: &mut usize, 
         input: &[f32;util::CHUNK_SIZE]
     | {
+        const PREVIOUS_TIME_PTR:usize = BUFFER_SIZE-2;
+        const ACTUAL_BUFFER_SIZE:usize = BUFFER_SIZE-2;
+
+        let second2sample = |second| (
+            ((second*(*sample_rate as f32)) as usize) * 2
+        ).clamp(2, ACTUAL_BUFFER_SIZE);
+        // is sample_rate ever large enough to have issues with floating point precision?
+        let samples_of_time = second2sample(params[1]);
+        // residual signal from longer delay time
+        // delay time used to be 0.8, changes to 0.4
+        // in this case the data from 0.4-0.8 are not overwritten
+        // later when the delay time moves back to 0.8, it plays
+        // sounds from waaay before
+        if buffer[PREVIOUS_TIME_PTR]>=params[1] {
+            let prev_samples_of_time = second2sample(buffer[PREVIOUS_TIME_PTR]);
+            for i in samples_of_time..(prev_samples_of_time) {
+                buffer[i] = 0.0;
+            }
+        }
+        buffer[PREVIOUS_TIME_PTR] = params[1];
+
         let mut result = [0.0;util::CHUNK_SIZE];
         for i in 0..util::CHUNK_SIZE {
             let mut accum = input[i];
 
-            // is sample_rate ever large enough to have issues with floating point precision?
-            let samples_of_time = 2.max(BUFFER_SIZE.min(((params[1]*(*sample_rate as f32)) as usize)*2));
             let delay_sound = buffer[(*pointer+1)%samples_of_time];
 
             accum += delay_sound*params[0];
@@ -69,9 +83,11 @@ pub const DELAY:EffectDefinition = EffectDefinition {
         let mut a = [0.0;MAXIMUM_PARAM_INDEX];
         a[0] = 0.0;
         a[1] = 0.25;
+        let mut b = [0.0;BUFFER_SIZE];
+        b[BUFFER_SIZE-2] = a[1];
         EffectData {
             params: a,
-            buffer: [0.0; BUFFER_SIZE],
+            buffer: b,
             buffer_pointer: 0,
         }
     }
