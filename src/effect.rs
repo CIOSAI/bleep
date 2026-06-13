@@ -81,7 +81,7 @@ pub const DELAY:EffectDefinition = EffectDefinition {
     },
     init: || {
         let mut a = [0.0;MAXIMUM_PARAM_INDEX];
-        a[0] = 0.0;
+        a[0] = 0.5;
         a[1] = 0.25;
         let mut b = [0.0;BUFFER_SIZE];
         b[BUFFER_SIZE-2] = a[1];
