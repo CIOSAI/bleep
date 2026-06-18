@@ -18,7 +18,9 @@ use device_query::{DeviceQuery, DeviceState, Keycode};
 
 mod util;
 mod effect;
+mod generator;
 
+const GENERATOR_BANK:[&generator::GeneratorDefinition;2] = [&generator::SINE_OSC, &generator::DETUNED_SAW];
 const EFFECT_BANK:[&effect::EffectDefinition;5] = [&effect::DELAY, &effect::HARDCLIP, &effect::PAN, &effect::LOWPASS, &effect::HIGHPASS];
 const SMOOTHING_SECONDS:f32 = 0.023;
 const DECLICK_SIZE: usize = 8;
@@ -73,88 +75,49 @@ fn main() -> anyhow::Result<()> {
 }
 
 pub struct OneSound {
-    note_pitch: i8,
+    sample: Vec<f32>,
     position: usize,
 }
 
 #[derive(Clone)]
 enum AudioCommand {
-    Bell(i8),
-    Saw(i8),
+    NewGenerator(&'static generator::GeneratorDefinition),
+    Play(usize, f32),
     NewEffect(&'static effect::EffectDefinition),
     DelEffect(usize),
     SetParam(usize,usize,f32),
 }
 
 pub struct Player {
-    cached_sounds: HashMap<i8, Arc<Vec<f32>>>,
     playing: Vec<OneSound>,
     consumer: Caching<Arc<SharedRb<Heap<AudioCommand>>>, false, true>,
     // put sounds in here first, for doing whatever final adjustment before streaming
     buffer_region: [f32;BUFFER_REGION_SIZE],
     buffer_region_pointer: usize,
+    generators: Vec<generator::Generator>,
     effect_stack: Vec<effect::Effect>,
     effect_wetness: Vec<f32>,
 }
 impl Player {
-    pub fn process<T:Sample>(&mut self, data: &mut [T], channels: u32, sample_rate: u32) 
+    pub fn process<T:Sample>(&mut self, data: &mut [T], _channels: u32, sample_rate: u32)
         where T: FromSample<f32>
     {
         while let Some(command) = self.consumer.try_pop() {
             match command {
-                AudioCommand::Bell(note_name) => {
-                    self.playing.push(OneSound { note_pitch: note_name.clone(), position: 0 });
-
-                    if !self.cached_sounds.contains_key(&note_name) {
-                        let size = (sample_rate/2) * (channels);
-                        let mut buffer:Vec<f32> = Vec::new();
-                        for i in 0..size {
-                            let is_left = i%channels==0;
-                            let t = ((i/channels) as f32)/(sample_rate as f32);
-
-                            let pitch = Instrument::name_to_pitch(&note_name);
-                            let decay = 40.0;
-                            let volume = 0.2;
-
-                            let mut val;
-                            {
-                                val = (t*pitch*f32::consts::TAU).sin();
-                                val *= f32::exp(-t.fract() * decay) * volume;
-                            }
-
-                            buffer.push(val);
-                        }
-
-                        self.cached_sounds.insert(note_name.clone(), Arc::new(buffer));
-                    }
+                AudioCommand::NewGenerator(def) => {
+                    self.generators.push(generator::Generator {
+                        definition: def,
+                        data: (def.init)(),
+                    });
                 },
-                AudioCommand::Saw(note_name) => {
-                    let temp = note_name.clone()+24;
-                    self.playing.push(OneSound { note_pitch: temp, position: 0 });
-
-                    if !self.cached_sounds.contains_key(&temp) {
-                        let size = (sample_rate/2) * (channels);
-                        let mut buffer:Vec<f32> = Vec::new();
-                        for i in 0..size {
-                            let is_left = i%channels==0;
-                            let t = ((i/channels) as f32)/(sample_rate as f32);
-
-                            let pitch = Instrument::name_to_pitch(&note_name);
-                            let decay = 10.0;
-                            let volume = 0.2;
-
-                            let mut val;
-                            {
-                                let fm = (t * (if is_left {30.0} else {40.0})).sin();
-                                val = (t*pitch+fm*0.3).fract()*2.0-1.0;
-                                val *= f32::exp(-t.fract() * decay) * volume;
-                            }
-
-                            buffer.push(val);
-                        }
-
-                        self.cached_sounds.insert(temp, Arc::new(buffer));
-                    }
+                AudioCommand::Play(generator, pitch) => {
+                    if generator>=self.generators.len() { return };
+                    let generator = &mut self.generators[generator];
+                    generator.data.params[0] = pitch;
+                    self.playing.push(OneSound {
+                        sample: (generator.definition.apply)(&sample_rate, generator.data.params),
+                        position: 0
+                    });
                 },
                 AudioCommand::NewEffect(def) => {
                     self.effect_stack.push(effect::Effect {
@@ -186,19 +149,14 @@ impl Player {
             for i in 0..chunk.len() {
                 let mut accum:f32 = 0.0;
                 self.playing.retain_mut(|sound| {
-                    match self.cached_sounds.get(&sound.note_pitch) {
-                        Some(buffer) => {
-                            if sound.position>=buffer.len() {
-                                false
-                            }
-                            else {
-                                let num = buffer.get(sound.position).unwrap_or(&0.0);
-                                sound.position += 1;
-                                accum += num;
-                                true
-                            }
-                        },
-                        None => { false }
+                    if sound.position>=sound.sample.len() {
+                        false
+                    }
+                    else {
+                        let num = sound.sample.get(sound.position).unwrap_or(&0.0);
+                        sound.position += 1;
+                        accum += num;
+                        true
                     }
                 });
                 signal[i] = accum;
@@ -254,37 +212,20 @@ pub struct Instrument {
     player: Player,
 }
 impl Instrument {
-    pub fn name_to_pitch(name: &i8) -> f32 {
-        match name {
-            0 => 440.0 * f32::powf(2.0, 3.0/12.0),
-            1 => 440.0 * f32::powf(2.0, 4.0/12.0),
-            2 => 440.0 * f32::powf(2.0, 5.0/12.0),
-            3 => 440.0 * f32::powf(2.0, 6.0/12.0),
-            4 => 440.0 * f32::powf(2.0, 7.0/12.0),
-            5 => 440.0 * f32::powf(2.0, 8.0/12.0),
-            6 => 440.0 * f32::powf(2.0, 9.0/12.0),
-            7 => 440.0 * f32::powf(2.0, 10.0/12.0),
-            8 => 440.0 * f32::powf(2.0, 11.0/12.0),
-            9 => 440.0 * f32::powf(2.0, 12.0/12.0),
-            10 => 440.0 * f32::powf(2.0, 13.0/12.0),
-            11 => 440.0 * f32::powf(2.0, 14.0/12.0),
-            12 => 440.0 * f32::powf(2.0, 15.0/12.0),
-            _ => 440.0
-        }
-    }
-
     pub fn new() -> Self {
+        // TODO: overrun pretty consistently, probably too heavy to generate the entire note sample
+        // at one?
         let ring = HeapRb::<AudioCommand>::new(64);
         let (producer, consumer) = ring.split();
 
         Self {
             producer: producer,
             player: Player {
-                cached_sounds: HashMap::new(),
                 playing: Vec::new(),
                 consumer: consumer,
                 buffer_region: [0.0;BUFFER_REGION_SIZE],
                 buffer_region_pointer: 0,
+                generators: Vec::new(),
                 effect_stack: Vec::new(),
                 effect_wetness: Vec::new(),
             }
@@ -320,6 +261,8 @@ where
     let mut prod = instrument.producer;
     let mut player = instrument.player;
 
+    prod.try_push(AudioCommand::NewGenerator(GENERATOR_BANK[1]));
+
     let channels = config.channels.clone() as u32; 
     let sample_rate = config.sample_rate.clone();
 
@@ -339,19 +282,20 @@ where
     let mut pressed:Vec<Keycode> = Vec::new();
 
     let mut piano:HashMap<Keycode, AudioCommand> = HashMap::new();
-    piano.insert(Keycode::Q, AudioCommand::Saw(0));
-    piano.insert(Keycode::Key2, AudioCommand::Saw(1));
-    piano.insert(Keycode::W, AudioCommand::Saw(2));
-    piano.insert(Keycode::Key3, AudioCommand::Saw(3));
-    piano.insert(Keycode::E, AudioCommand::Saw(4));
-    piano.insert(Keycode::R, AudioCommand::Saw(5));
-    piano.insert(Keycode::Key5, AudioCommand::Saw(6));
-    piano.insert(Keycode::T, AudioCommand::Saw(7));
-    piano.insert(Keycode::Key6, AudioCommand::Saw(8));
-    piano.insert(Keycode::Y, AudioCommand::Saw(9));
-    piano.insert(Keycode::Key7, AudioCommand::Saw(10));
-    piano.insert(Keycode::U, AudioCommand::Saw(11));
-    piano.insert(Keycode::I, AudioCommand::Saw(12));
+    let edo12fromC = |f:f32| 440.0 * f32::powf(2.0, (3.0+f)/12.0);
+    piano.insert(Keycode::Q, AudioCommand::Play(0, edo12fromC(0.0)));
+    piano.insert(Keycode::Key2, AudioCommand::Play(0, edo12fromC(1.0)));
+    piano.insert(Keycode::W, AudioCommand::Play(0, edo12fromC(2.0)));
+    piano.insert(Keycode::Key3, AudioCommand::Play(0, edo12fromC(3.0)));
+    piano.insert(Keycode::E, AudioCommand::Play(0, edo12fromC(4.0)));
+    piano.insert(Keycode::R, AudioCommand::Play(0, edo12fromC(5.0)));
+    piano.insert(Keycode::Key5, AudioCommand::Play(0, edo12fromC(6.0)));
+    piano.insert(Keycode::T, AudioCommand::Play(0, edo12fromC(7.0)));
+    piano.insert(Keycode::Key6, AudioCommand::Play(0, edo12fromC(8.0)));
+    piano.insert(Keycode::Y, AudioCommand::Play(0, edo12fromC(9.0)));
+    piano.insert(Keycode::Key7, AudioCommand::Play(0, edo12fromC(10.0)));
+    piano.insert(Keycode::U, AudioCommand::Play(0, edo12fromC(11.0)));
+    piano.insert(Keycode::I, AudioCommand::Play(0, edo12fromC(12.0)));
 
     let mut gui = GUI {
         throttle_ms: 50,
