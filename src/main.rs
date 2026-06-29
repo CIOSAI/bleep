@@ -74,6 +74,7 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
+// TODO: this is util::CHUCK_SIZE length
 pub struct OneSound {
     sample: Vec<f32>,
     position: usize,
@@ -113,6 +114,9 @@ impl Player {
                 AudioCommand::Play(generator, pitch) => {
                     if generator>=self.generators.len() { return };
                     let generator = &mut self.generators[generator];
+                    // TODO: take a note what pitch was played, the generator should tell me if
+                    // it's done
+                    // TODO: make it possible to specify CHUNK_SIZEs away from attack
                     generator.data.params[0] = pitch;
                     self.playing.push(OneSound {
                         sample: (generator.definition.apply)(&sample_rate, generator.data.params),
@@ -213,8 +217,6 @@ pub struct Instrument {
 }
 impl Instrument {
     pub fn new() -> Self {
-        // TODO: overrun pretty consistently, probably too heavy to generate the entire note sample
-        // at one?
         let ring = HeapRb::<AudioCommand>::new(64);
         let (producer, consumer) = ring.split();
 

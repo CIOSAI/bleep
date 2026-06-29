@@ -4,6 +4,8 @@ pub const MAXIMUM_PARAM_INDEX:usize = 64;
 
 // let's keep param[0] as pitch until i find something better TODO
 // controls for this??
+//
+// TODO: generate only util::CHUNK_SIZE amount at a time
 
 pub struct GeneratorDefinition {
     pub title: &'static str,
