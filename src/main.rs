@@ -283,21 +283,26 @@ where
     let device_reader = DeviceState::new();
     let mut pressed:Vec<Keycode> = Vec::new();
 
-    let mut piano:HashMap<Keycode, AudioCommand> = HashMap::new();
     let edo12fromC = |f:f32| 440.0 * f32::powf(2.0, (3.0+f)/12.0);
-    piano.insert(Keycode::Q, AudioCommand::Play(0, edo12fromC(0.0)));
-    piano.insert(Keycode::Key2, AudioCommand::Play(0, edo12fromC(1.0)));
-    piano.insert(Keycode::W, AudioCommand::Play(0, edo12fromC(2.0)));
-    piano.insert(Keycode::Key3, AudioCommand::Play(0, edo12fromC(3.0)));
-    piano.insert(Keycode::E, AudioCommand::Play(0, edo12fromC(4.0)));
-    piano.insert(Keycode::R, AudioCommand::Play(0, edo12fromC(5.0)));
-    piano.insert(Keycode::Key5, AudioCommand::Play(0, edo12fromC(6.0)));
-    piano.insert(Keycode::T, AudioCommand::Play(0, edo12fromC(7.0)));
-    piano.insert(Keycode::Key6, AudioCommand::Play(0, edo12fromC(8.0)));
-    piano.insert(Keycode::Y, AudioCommand::Play(0, edo12fromC(9.0)));
-    piano.insert(Keycode::Key7, AudioCommand::Play(0, edo12fromC(10.0)));
-    piano.insert(Keycode::U, AudioCommand::Play(0, edo12fromC(11.0)));
-    piano.insert(Keycode::I, AudioCommand::Play(0, edo12fromC(12.0)));
+    let key_matrix = [vec![
+        Keycode::Key1,Keycode::Key2,Keycode::Key3,Keycode::Key4,Keycode::Key5,Keycode::Key6,Keycode::Key7,Keycode::Key8,Keycode::Key9,Keycode::Key0,Keycode::Minus,Keycode::Equal,
+    ],vec![
+        Keycode::Q,Keycode::W,Keycode::E,Keycode::R,Keycode::T,Keycode::Y,Keycode::U,Keycode::I,Keycode::O,Keycode::P,Keycode::LeftBracket,Keycode::RightBracket,
+    ],vec![
+        Keycode::A,Keycode::S,Keycode::D,Keycode::F,Keycode::G,Keycode::H,Keycode::J,Keycode::K,Keycode::L,Keycode::Semicolon,Keycode::Apostrophe,
+    ],vec![
+        Keycode::Z,Keycode::X,Keycode::C,Keycode::V,Keycode::B,Keycode::N,Keycode::M,Keycode::Comma,Keycode::Dot,Keycode::Slash,
+    ],];
+    const NOTE_OF_TOPLEFT:f32 = -7.0;
+    let mut piano:HashMap<Keycode, AudioCommand> = HashMap::new();
+    // wicki-hayden for qwertyUS
+    for (i,row) in key_matrix.iter().enumerate() {
+        for (j,key) in row.iter().enumerate() {
+            piano.insert(key.clone(), AudioCommand::Play(0,
+                edo12fromC(NOTE_OF_TOPLEFT-((i*5) as f32)+((j*2) as f32))
+            ));
+        }
+    }
 
     let mut gui = GUI {
         throttle_ms: 50,
