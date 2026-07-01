@@ -21,7 +21,7 @@ mod effect;
 mod generator;
 
 const GENERATOR_BANK:[&generator::GeneratorDefinition;2] = [&generator::SINE_OSC, &generator::DETUNED_SAW];
-const EFFECT_BANK:[&effect::EffectDefinition;5] = [&effect::DELAY, &effect::HARDCLIP, &effect::PAN, &effect::LOWPASS, &effect::HIGHPASS];
+const EFFECT_BANK:[&effect::EffectDefinition;6] = [&effect::DELAY, &effect::HARDCLIP, &effect::PAN, &effect::LOWPASS, &effect::HIGHPASS, &effect::EQ];
 const SMOOTHING_SECONDS:f32 = 0.023;
 const DECLICK_SIZE: usize = 8;
 const BUFFER_REGION_SIZE: usize = 2048;

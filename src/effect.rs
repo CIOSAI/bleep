@@ -26,6 +26,19 @@ pub struct Effect {
     pub data: EffectData,
 }
 
+const FREQ_BOUND:(f32,f32) = (20.0, 20000.0);
+const FILT_LIN2ALPH:fn(f32,&u32) -> f32 = |l:f32,sample_rate:&u32| {
+    let f = l*FREQ_BOUND.1*PI/(*sample_rate as f32);
+    (f/(f+1.0)).tan()
+};
+const LP:fn(f32,f32,f32) -> (f32,f32) = |input:f32, prev:f32, alpha:f32| {
+    let mut state = prev;
+    let d = alpha*(input-prev);
+    state += d;
+    let result = state;
+    (result, state+d)
+};
+
 pub const DELAY:EffectDefinition = EffectDefinition {
     title: "delay",
     param_names: {
@@ -144,7 +157,7 @@ pub const PAN:EffectDefinition = EffectDefinition {
     | {
         let mut result = [0.0;util::CHUNK_SIZE];
         // TODO: there may be a better way to write this math
-        let direct = [if params[0]<0.5 {params[0]+0.5} else {2.0-params[0]*2.0}, 
+        let direct = [if params[0]<0.5 {params[0]+0.5} else {2.0-params[0]*2.0},
                       if params[0]<0.5 {params[0]*2.0} else {1.5-params[0]}];
         let opposite = [(0.5-params[0]).max(0.0), (params[0]-0.5).max(0.0)];
         for i in 0..(util::CHUNK_SIZE/2) {
@@ -171,20 +184,28 @@ pub const EQ:EffectDefinition = EffectDefinition {
         let mut a = ["";MAXIMUM_PARAM_INDEX];
         a[0] = "cut off";
         a[1] = "lp-band-hp";
-        a[2] = "intensity";
+        a[2] = "slope";
         a
     },
     param_count: 3,
     apply: |
         _sample_rate: &u32,
         params:[f32; MAXIMUM_PARAM_INDEX], 
-        _buffer: &mut [f32; BUFFER_SIZE], 
+        buffer: &mut [f32; BUFFER_SIZE], 
         _pointer: &mut usize, 
         input: &[f32;util::CHUNK_SIZE]
     | {
-        const FREQ_BOUND:(f32, f32) = (20.0, 20000.0);
-        const BANDS:usize = 256;
+        const BANDS:usize = 16;
+        let volume_map = |x:f32| {
+            let x = (x-params[0])*(BANDS as f32);
+            let direct = (if params[1]<0.5 {params[1]+0.5} else {2.0-params[1]*2.0},
+                          if params[1]<0.5 {params[1]*2.0} else {1.5-params[1]});
+            let tilt = if x>0.0 { direct.0 } else { direct.1 };
+            let spread = (1.0-params[2])*5.0+1.0;
+            f32::exp(-(x*tilt).powi(2)/spread.powi(2))
+        };
 
+        /*
         let mut spectrum = [0.0;BANDS];
         for band in 0..BANDS {
             let prog = (band as f32)/(BANDS as f32);
@@ -202,20 +223,24 @@ pub const EQ:EffectDefinition = EffectDefinition {
 
             spectrum[band] /= (util::CHUNK_SIZE/64) as f32;
         }
+        */
         
         let mut result = [0.0;util::CHUNK_SIZE];
-        for band in 0..BANDS {
-            let prog = (band as f32)/(BANDS as f32);
-            let f = FREQ_BOUND.0.powf(
-                1.0 + (FREQ_BOUND.1.log(FREQ_BOUND.0)-1.0)*prog
-            );
-            
+        for band in 0..(BANDS+3) {
+            let i = band as i32;
+            let cutoffs = (FILT_LIN2ALPH((((i-1) as f32)/(BANDS as f32)).clamp(0.0,1.0), _sample_rate), 
+                           FILT_LIN2ALPH(((i as f32)/(BANDS as f32)).clamp(0.0,1.0), _sample_rate));
             for i in 0..(util::CHUNK_SIZE/2) {
-                let wave = (((i*2) as f32)*f*TAU/(*_sample_rate as f32)).sin()*spectrum[band];
-                result[i*2] += wave*0.02;
-                result[i*2+1] += wave*0.02;
+                for j in 0..2 {
+                    let (low, state) = LP(input[i*2+j], buffer[band*4 + j], cutoffs.0);
+                    buffer[band*4 + j] = if i<util::CHUNK_SIZE/2-1 { state } else { low };
+
+                    let (mid, state) = LP(input[i*2+j]-low, buffer[band*4 + 2+j], cutoffs.1);
+                    buffer[band*4 + 2+j] = if i<util::CHUNK_SIZE/2-1 { state } else { mid };
+
+                    result[i*2+j] += mid*volume_map(((band as f32)+0.5)/(BANDS as f32));
+                }
             }
-            
         }
 
         result
@@ -248,25 +273,18 @@ pub const LOWPASS:EffectDefinition = EffectDefinition {
         _pointer: &mut usize, 
         input: &[f32;util::CHUNK_SIZE]
     | {
-        let f = params[0]*20000.0*PI/(*_sample_rate as f32);
-        let d = (f/(f+1.0)).tan();
+        let d = FILT_LIN2ALPH(params[0], _sample_rate);
         let mut result = [0.0;util::CHUNK_SIZE];
 
-        let mut prev = [buffer[0], buffer[1]];
         for i in 0..(util::CHUNK_SIZE/2) {
-            let d = [d*(input[i*2]-prev[0]), d*(input[i*2+1]-prev[1])];
+            for j in 0..2 {
+                let (out, state) = LP(input[i*2+j], buffer[j], d);
+                buffer[j] = if i<util::CHUNK_SIZE/2-1 { state } else { out };
+                let (out, state) = LP(out, buffer[2+j], d);
+                buffer[2+j] = if i<util::CHUNK_SIZE/2-1 { state } else { out };
 
-            prev[0] += d[0];
-            prev[1] += d[1];
-
-            result[i*2] = prev[0];
-            result[i*2+1] = prev[1];
-
-            prev[0] += d[0];
-            prev[1] += d[1];
-
-            buffer[0] = prev[0]+d[0];
-            buffer[1] = prev[1]+d[1];
+                result[i*2+j] = out;
+            }
         }
 
         result
@@ -297,25 +315,25 @@ pub const HIGHPASS:EffectDefinition = EffectDefinition {
         _pointer: &mut usize, 
         input: &[f32;util::CHUNK_SIZE]
     | {
+        let d = FILT_LIN2ALPH(params[0], _sample_rate);
         let mut result = [0.0;util::CHUNK_SIZE];
 
-        let mut prev = [buffer[0], buffer[1]];
         for i in 0..(util::CHUNK_SIZE/2) {
-            let lerp = |a:f32,b:f32,c:f32| a*(1.0-c)+(b-a)*c;
-            prev[0] = lerp(prev[0], input[i*2], params[0]);
-            prev[1] = lerp(prev[1], input[i*2+1], params[0]);
-            result[i*2] = input[i*2]-prev[0];
-            result[i*2+1] = input[i*2+1]-prev[1];
+            for j in 0..2 {
+                let (out, state) = LP(input[i*2+j], buffer[j], d);
+                buffer[j] = if i<util::CHUNK_SIZE/2-1 { state } else { out };
+                let (out, state) = LP(out, buffer[2+j], d);
+                buffer[2+j] = if i<util::CHUNK_SIZE/2-1 { state } else { out };
 
-            buffer[0] = prev[0];
-            buffer[1] = prev[1];
+                result[i*2+j] = input[i*2+j]-out;
+            }
         }
 
         result
     },
     init: || {
         let mut a = [0.0;MAXIMUM_PARAM_INDEX];
-        a[0] = 0.5;
+        a[0] = 0.1;
         EffectData {
             params: a,
             buffer: [0.0; BUFFER_SIZE],
