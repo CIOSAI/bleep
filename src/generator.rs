@@ -1,4 +1,5 @@
 use std::f32::consts::{TAU};
+use std::hash::{Hash, Hasher, DefaultHasher};
 
 pub const MAXIMUM_PARAM_INDEX:usize = 64;
 
@@ -118,3 +119,50 @@ pub const DETUNED_SAW:GeneratorDefinition = GeneratorDefinition {
     }
 };
 
+pub const WHITE_NOISE:GeneratorDefinition = GeneratorDefinition {
+    title: "white noise",
+    param_names: {
+        let mut a = ["";MAXIMUM_PARAM_INDEX];
+        a[0] = "N/A";
+        a[1] = "volume";
+        a[2] = "decay";
+        a
+    },
+    param_count: 3,
+    apply: |
+        sample_rate: &u32,
+        params:[f32; MAXIMUM_PARAM_INDEX], 
+    | {
+        let size = *sample_rate;
+        let mut hasher = DefaultHasher::new();
+        let mut result:Vec<f32> = Vec::new();
+        for i in 0..size {
+            let is_left = i%2==0;
+            let t = ((i/2) as f32)/(*sample_rate as f32);
+
+            let volume = params[1];
+            let decay = 64.0-params[2]*63.0;
+
+            let mut val;
+            {
+                i.hash(&mut hasher);
+                is_left.hash(&mut hasher);
+                val = (hasher.finish() as f32)/(u64::MAX as f32) * 2.0 - 1.0;
+                val *= f32::exp(-t.fract() * decay) * volume;
+            }
+
+            result.push(val);
+        }
+
+        result
+    },
+    init: || {
+        let mut a = [0.0;MAXIMUM_PARAM_INDEX];
+        a[0] = 440.0;
+        a[1] = 0.25;
+        a[2] = 0.6;
+        GeneratorData {
+            params: a,
+        }
+    }
+};
