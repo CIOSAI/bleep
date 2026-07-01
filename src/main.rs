@@ -74,23 +74,31 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
-// TODO: this is util::CHUCK_SIZE length
-pub struct OneSound {
-    sample: Vec<f32>,
+pub struct NoteData {
+    instrument: usize,
+    is_pressed: bool,
+    pitch: f32,
+    current_chunk: u128,
+}
+
+pub struct AudioSample {
+    sample: [f32;util::CHUNK_SIZE],
     position: usize,
 }
 
 #[derive(Clone)]
 enum AudioCommand {
     NewGenerator(&'static generator::GeneratorDefinition),
-    Play(usize, f32),
+    Press(usize, Keycode, f32),
+    Release(Keycode),
     NewEffect(&'static effect::EffectDefinition),
     DelEffect(usize),
     SetParam(usize,usize,f32),
 }
 
 pub struct Player {
-    playing: Vec<OneSound>,
+    playing_keys: HashMap<Keycode, NoteData>,
+    playing_samples: Vec<AudioSample>,
     consumer: Caching<Arc<SharedRb<Heap<AudioCommand>>>, false, true>,
     // put sounds in here first, for doing whatever final adjustment before streaming
     buffer_region: [f32;BUFFER_REGION_SIZE],
@@ -111,17 +119,32 @@ impl Player {
                         data: (def.init)(),
                     });
                 },
-                AudioCommand::Play(generator, pitch) => {
+                AudioCommand::Press(generator, key, pitch) => {
                     if generator>=self.generators.len() { return };
-                    let generator = &mut self.generators[generator];
-                    // TODO: take a note what pitch was played, the generator should tell me if
-                    // it's done
-                    // TODO: make it possible to specify CHUNK_SIZEs away from attack
-                    generator.data.params[0] = pitch;
-                    self.playing.push(OneSound {
-                        sample: (generator.definition.apply)(&sample_rate, generator.data.params),
-                        position: 0
-                    });
+                    match self.playing_keys.get_mut(&key) {
+                        Some(note_data) => {
+                            note_data.instrument = generator;
+                            note_data.is_pressed = true;
+                            note_data.current_chunk = 0;
+                        },
+                        None => {
+                            self.playing_keys.insert(key.clone(), NoteData {
+                                instrument: generator,
+                                is_pressed: true,
+                                pitch: pitch,
+                                current_chunk: 0,
+                            });
+                        },
+                    }
+                },
+                AudioCommand::Release(key) => {
+                    match self.playing_keys.get_mut(&key) {
+                        Some(note_data) => {
+                            note_data.is_pressed = false;
+                            note_data.current_chunk = 0;
+                        },
+                        None => {}
+                    }
                 },
                 AudioCommand::NewEffect(def) => {
                     self.effect_stack.push(effect::Effect {
@@ -148,11 +171,34 @@ impl Player {
         }
 
         for chunk in data.chunks(util::CHUNK_SIZE) {
+            // create samples
+            let mut kill_list:Vec<Keycode> = Vec::new();
+            for (key, note_data) in self.playing_keys.iter_mut() {
+                let generator = &mut self.generators[note_data.instrument];
+                (*generator).data.params[0] = note_data.pitch;
+                let (sample_chunk, finished) = (generator.definition.apply)(
+                    &sample_rate,
+                    generator.data.params,
+                    &note_data.current_chunk,
+                    &note_data.is_pressed, // couldve been a param i guess?
+                );
+                note_data.current_chunk += 1;
+                self.playing_samples.push(AudioSample {
+                    sample: sample_chunk,
+                    position: 0
+                });
+                if (!note_data.is_pressed) && finished {
+                    kill_list.push(key.clone());
+                }
+            }
+            for victim in kill_list {
+                self.playing_keys.remove(&victim);
+            }
             // create sound
             let mut signal = [0.0;util::CHUNK_SIZE];
             for i in 0..chunk.len() {
                 let mut accum:f32 = 0.0;
-                self.playing.retain_mut(|sound| {
+                self.playing_samples.retain_mut(|sound| {
                     if sound.position>=sound.sample.len() {
                         false
                     }
@@ -223,7 +269,8 @@ impl Instrument {
         Self {
             producer: producer,
             player: Player {
-                playing: Vec::new(),
+                playing_keys: HashMap::new(),
+                playing_samples: Vec::new(),
                 consumer: consumer,
                 buffer_region: [0.0;BUFFER_REGION_SIZE],
                 buffer_region_pointer: 0,
@@ -263,7 +310,9 @@ where
     let mut prod = instrument.producer;
     let mut player = instrument.player;
 
-    prod.try_push(AudioCommand::NewGenerator(GENERATOR_BANK[1]));
+    _ = prod.try_push(AudioCommand::NewGenerator(GENERATOR_BANK[0]));
+    _ = prod.try_push(AudioCommand::NewGenerator(GENERATOR_BANK[1]));
+    _ = prod.try_push(AudioCommand::NewGenerator(GENERATOR_BANK[2]));
 
     let channels = config.channels.clone() as u32; 
     let sample_rate = config.sample_rate.clone();
@@ -294,13 +343,11 @@ where
         Keycode::Z,Keycode::X,Keycode::C,Keycode::V,Keycode::B,Keycode::N,Keycode::M,Keycode::Comma,Keycode::Dot,Keycode::Slash,
     ],];
     const NOTE_OF_TOPLEFT:f32 = -7.0;
-    let mut piano:HashMap<Keycode, AudioCommand> = HashMap::new();
+    let mut piano:HashMap<Keycode, f32> = HashMap::new();
     // wicki-hayden for qwertyUS
     for (i,row) in key_matrix.iter().enumerate() {
         for (j,key) in row.iter().enumerate() {
-            piano.insert(key.clone(), AudioCommand::Play(0,
-                edo12fromC(NOTE_OF_TOPLEFT-((i*5) as f32)+((j*2) as f32))
-            ));
+            piano.insert(key.clone(), edo12fromC(NOTE_OF_TOPLEFT-((i*5) as f32)+((j*2) as f32)));
         }
     }
 
@@ -437,10 +484,19 @@ where
             .filter(|k| !pressed.contains(k))
             .cloned()
             .collect();
+        let just_released: Vec<Keycode> = pressed
+            .iter()
+            .filter(|k| !keys.contains(k))
+            .cloned()
+            .collect();
 
         for (k,v) in &piano {
             if just_pressed.contains(&k) {
-                let _ = prod.try_push(v.clone());
+                // TODO: option to change instrument live?
+                let _ = prod.try_push(AudioCommand::Press(0, k.clone(), *v));
+            }
+            if just_released.contains(&k) {
+                let _ = prod.try_push(AudioCommand::Release(k.clone()));
             }
         }
 

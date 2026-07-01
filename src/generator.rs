@@ -1,3 +1,4 @@
+use crate::util;
 use std::f32::consts::{TAU};
 use std::hash::{Hash, Hasher, DefaultHasher};
 
@@ -5,8 +6,6 @@ pub const MAXIMUM_PARAM_INDEX:usize = 64;
 
 // let's keep param[0] as pitch until i find something better TODO
 // controls for this??
-//
-// TODO: generate only util::CHUNK_SIZE amount at a time
 
 pub struct GeneratorDefinition {
     pub title: &'static str,
@@ -15,7 +14,9 @@ pub struct GeneratorDefinition {
     pub apply: fn(
         &u32,
         [f32; MAXIMUM_PARAM_INDEX], 
-    ) -> Vec<f32>,
+        &u128,
+        &bool,
+    ) -> ([f32;util::CHUNK_SIZE], bool),
     pub init: fn() -> GeneratorData,
 }
 pub struct GeneratorData {
@@ -26,6 +27,7 @@ pub struct Generator {
     pub data: GeneratorData,
 }
 
+// TODO: by not distinguishing attack moment and release moment, we also can't have proper sustain
 pub const SINE_OSC:GeneratorDefinition = GeneratorDefinition {
     title: "sine osc",
     param_names: {
@@ -39,27 +41,31 @@ pub const SINE_OSC:GeneratorDefinition = GeneratorDefinition {
     apply: |
         sample_rate: &u32,
         params:[f32; MAXIMUM_PARAM_INDEX], 
+        chunk_index: &u128,
+        is_pressed: &bool,
     | {
-        let size = *sample_rate;
-        let mut result:Vec<f32> = Vec::new();
+        let mut result:[f32;util::CHUNK_SIZE] = [0.0; util::CHUNK_SIZE];
 
-        for i in 0..size {
-            let t = ((i/2) as f32)/(*sample_rate as f32);
+        if *is_pressed {
+            for i in 0..util::CHUNK_SIZE {
+                let ti = (*chunk_index as usize)*util::CHUNK_SIZE + i;
+                let t = ((ti/2) as f32)/(*sample_rate as f32);
 
-            let pitch = params[0];
-            let volume = params[1];
-            let decay = 64.0-params[2]*63.0;
+                let pitch = params[0];
+                let volume = params[1];
+                let decay = 64.0-params[2]*63.0;
 
-            let mut val;
-            {
-                val = (t*pitch*TAU).sin();
-                val *= f32::exp(-t.fract() * decay) * volume;
+                let mut val;
+                {
+                    val = (t*pitch*TAU).sin();
+                    val *= f32::exp(-t.fract() * decay) * volume;
+                }
+
+                result[i] = val;
             }
-
-            result.push(val);
         }
 
-        result
+        (result, chunk_index*(util::CHUNK_SIZE as u128) > (*sample_rate as u128))
     },
     init: || {
         let mut a = [0.0;MAXIMUM_PARAM_INDEX];
@@ -72,6 +78,7 @@ pub const SINE_OSC:GeneratorDefinition = GeneratorDefinition {
     }
 };
 
+// TODO: phase issues (again due to not distinguishing attack moment and release moment)
 pub const DETUNED_SAW:GeneratorDefinition = GeneratorDefinition {
     title: "detuned saw",
     param_names: {
@@ -85,12 +92,17 @@ pub const DETUNED_SAW:GeneratorDefinition = GeneratorDefinition {
     apply: |
         sample_rate: &u32,
         params:[f32; MAXIMUM_PARAM_INDEX], 
+        chunk_index: &u128,
+        is_pressed: &bool,
     | {
-        let size = *sample_rate;
-        let mut result:Vec<f32> = Vec::new();
-        for i in 0..size {
+        let mut result:[f32;util::CHUNK_SIZE] = [0.0; util::CHUNK_SIZE];
+        let mut finished = !is_pressed;
+        finished = finished && chunk_index*(util::CHUNK_SIZE as u128) > (*sample_rate as u128);
+
+        for i in 0..util::CHUNK_SIZE {
             let is_left = i%2==0;
-            let t = ((i/2) as f32)/(*sample_rate as f32);
+            let ti = (*chunk_index as usize)*util::CHUNK_SIZE + i;
+            let t = ((ti/2) as f32)/(*sample_rate as f32);
 
             let pitch = params[0];
             let volume = params[1];
@@ -100,13 +112,14 @@ pub const DETUNED_SAW:GeneratorDefinition = GeneratorDefinition {
             {
                 let fm = (t * (if is_left {30.0} else {40.0})).sin();
                 val = (t*pitch+fm*0.3).fract()*2.0-1.0;
-                val *= f32::exp(-t.fract() * decay) * volume;
+                val *= volume;
+                val *= if *is_pressed { 1.0 } else { f32::exp(-t.fract() * decay) };
             }
 
-            result.push(val);
+            result[i] = val;
         }
 
-        result
+        (result, finished)
     },
     init: || {
         let mut a = [0.0;MAXIMUM_PARAM_INDEX];
@@ -125,36 +138,41 @@ pub const WHITE_NOISE:GeneratorDefinition = GeneratorDefinition {
         let mut a = ["";MAXIMUM_PARAM_INDEX];
         a[0] = "N/A";
         a[1] = "volume";
-        a[2] = "decay";
         a
     },
     param_count: 3,
     apply: |
-        sample_rate: &u32,
+        _sample_rate: &u32,
         params:[f32; MAXIMUM_PARAM_INDEX], 
+        chunk_index: &u128,
+        is_pressed: &bool,
     | {
-        let size = *sample_rate;
-        let mut hasher = DefaultHasher::new();
-        let mut result:Vec<f32> = Vec::new();
-        for i in 0..size {
-            let is_left = i%2==0;
-            let t = ((i/2) as f32)/(*sample_rate as f32);
+        let mut result:[f32;util::CHUNK_SIZE] = [0.0; util::CHUNK_SIZE];
 
-            let volume = params[1];
-            let decay = 64.0-params[2]*63.0;
+        if *is_pressed {
+            let mut hasher = DefaultHasher::new();
+            (*chunk_index).hash(&mut hasher);
+            for i in 0..util::CHUNK_SIZE {
+                let is_left = i%2==0;
 
-            let mut val;
-            {
-                i.hash(&mut hasher);
-                is_left.hash(&mut hasher);
-                val = (hasher.finish() as f32)/(u64::MAX as f32) * 2.0 - 1.0;
-                val *= f32::exp(-t.fract() * decay) * volume;
+                let volume = params[1];
+
+                let mut val;
+                {
+                    i.hash(&mut hasher);
+                    is_left.hash(&mut hasher);
+                    val = (hasher.finish() as f32)/(u64::MAX as f32) * 2.0 - 1.0;
+                    val *= volume;
+                }
+
+                result[i] = val;
             }
 
-            result.push(val);
+            return (result, false);
         }
-
-        result
+        else {
+            return (result, true);
+        }
     },
     init: || {
         let mut a = [0.0;MAXIMUM_PARAM_INDEX];
