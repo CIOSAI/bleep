@@ -462,6 +462,9 @@ where
             params.remove(index);
             let _ = prod.try_push(AudioCommand::DelEffect(index));
         }
+        if gui.current_effect>=effects.len() {
+            gui.current_effect = if effects.len()==0 { 0 } else { effects.len()-1 };
+        }
     };
 
     let set_param = |
@@ -511,17 +514,22 @@ where
 
         match gui.mode {
             Modes::PERFORM => {
-                if just_pressed.contains(&Keycode::K) {
-                    gui.current_effect = gui.current_effect.saturating_sub(1);
-                }
-                if just_pressed.contains(&Keycode::J) {
-                    gui.current_effect = usize::min(gui.current_effect+1, gui.effect_params.len());
-                }
-                if just_pressed.contains(&Keycode::H) {
-                    gui.current_param = gui.current_param.saturating_sub(1);
-                }
-                if just_pressed.contains(&Keycode::L) {
-                    gui.current_param = usize::min(gui.current_param+1, gui.effect_params[gui.current_effect].len()+1);
+                if !gui.effect_params.is_empty() {
+                    if just_pressed.contains(&Keycode::K) {
+                        gui.current_effect = if gui.current_effect>0 { gui.current_effect-1 } else { gui.effect_params.len()-1 };
+                    }
+                    if just_pressed.contains(&Keycode::J) {
+                        gui.current_effect = if gui.current_effect<gui.effect_params.len()-1 { gui.current_effect+1 } else { 0 };
+                    }
+
+                    let param_count = gui.effect_params[gui.current_effect].len()+1;
+                    if gui.current_param>=param_count { gui.current_param = param_count-1; }
+                    if just_pressed.contains(&Keycode::H) {
+                        gui.current_param = if gui.current_param>0 { gui.current_param-1 } else { param_count-1 };
+                    }
+                    if just_pressed.contains(&Keycode::L) {
+                        gui.current_param = if gui.current_param<param_count-1 { gui.current_param+1 } else { 0 };
+                    }
                 }
                 
                 if !gui.effect_stack.is_empty() && gui.last_sent_slider.elapsed()
@@ -553,27 +561,29 @@ where
                 }
                 match gui.edit_column {
                     0 => {
-                        if just_pressed.contains(&Keycode::K) {
-                            gui.current_effect = gui.current_effect.saturating_sub(1);
-                        }
-                        if just_pressed.contains(&Keycode::J) {
-                            gui.current_effect = usize::min(gui.current_effect+1, gui.effect_params.len());
-                        }
-                        if just_pressed.contains(&Keycode::Delete) {
-                            let current_effect = gui.current_effect;
-                            del_effect(
-                                &mut prod,
-                                &mut gui,
-                                current_effect
-                            );
+                        if !gui.effect_stack.is_empty() {
+                            if just_pressed.contains(&Keycode::K) {
+                                gui.current_effect = if gui.current_effect>0 { gui.current_effect-1 } else { gui.effect_stack.len()-1 };
+                            }
+                            if just_pressed.contains(&Keycode::J) {
+                                gui.current_effect = if gui.current_effect<gui.effect_stack.len()-1 { gui.current_effect+1 } else { 0 };
+                            }
+                            if just_pressed.contains(&Keycode::Delete) {
+                                let current_effect = gui.current_effect;
+                                del_effect(
+                                    &mut prod,
+                                    &mut gui,
+                                    current_effect
+                                );
+                            }
                         }
                     },
                     1 => {
                         if just_pressed.contains(&Keycode::K) {
-                            gui.current_to_add = gui.current_to_add.saturating_sub(1);
+                            gui.current_to_add = if gui.current_to_add>0 { gui.current_to_add-1 } else { EFFECT_BANK.len()-1 };
                         }
                         if just_pressed.contains(&Keycode::J) {
-                            gui.current_to_add = usize::min(gui.current_to_add+1, EFFECT_BANK.len());
+                            gui.current_to_add = if gui.current_to_add<EFFECT_BANK.len()-1 { gui.current_to_add+1 } else { 0 };
                         }
                         if just_pressed.contains(&Keycode::Enter) {
                             let current_to_add = gui.current_to_add;
@@ -586,14 +596,13 @@ where
                     },
                     2 => {
                         if just_pressed.contains(&Keycode::K) {
-                            gui.current_instrument = gui.current_instrument.saturating_sub(1);
+                            gui.current_instrument = if gui.current_instrument>0 { gui.current_instrument-1 } else { GENERATOR_BANK.len()-1 };
                         }
                         if just_pressed.contains(&Keycode::J) {
-                            gui.current_instrument = usize::min(gui.current_instrument+1, GENERATOR_BANK.len());
+                            gui.current_instrument = if gui.current_instrument<GENERATOR_BANK.len()-1 { gui.current_instrument+1 } else { 0 };
                         }
                     },
-                    _ => {
-                    },
+                    _ => { },
                 }
 
                 if just_pressed.contains(&Keycode::Tab) {
