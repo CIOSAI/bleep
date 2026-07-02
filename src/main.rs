@@ -295,6 +295,7 @@ struct GUI {
     current_effect: usize,
     current_param: usize,
     current_to_add: usize,
+    current_octave: i32,
     mode: Modes,
     effect_stack: Vec<&'static effect::EffectDefinition>,
     effect_params: Vec<Vec<f32>>,
@@ -360,6 +361,7 @@ where
         current_effect: 0,
         current_param: 0,
         current_to_add: 0,
+        current_octave: 0,
         mode: Modes::PERFORM,
         effect_stack: Vec::new(),
         effect_params: Vec::new(),
@@ -375,6 +377,7 @@ where
             current_effect,
             current_param,
             current_to_add,
+            current_octave,
             mode,
             effect_stack,
             effect_params,
@@ -386,6 +389,7 @@ where
         match mode {
             Modes::PERFORM => {
                 println!("PERFORM MODE");
+                println!("octave {}, arrow ← → to change", current_octave);
                 println!("{}", GENERATOR_BANK[*current_instrument].title);
                 for i in 0..effect_stack.len() {
                     println!("  {}", effect_stack[i].title);
@@ -505,7 +509,7 @@ where
 
         for (k,v) in &piano {
             if just_pressed.contains(&k) {
-                let _ = prod.try_push(AudioCommand::Press(gui.current_instrument, k.clone(), *v));
+                let _ = prod.try_push(AudioCommand::Press(gui.current_instrument, k.clone(), *v * 2.0_f32.powi(gui.current_octave)));
             }
             if just_released.contains(&k) {
                 let _ = prod.try_push(AudioCommand::Release(k.clone()));
@@ -514,6 +518,13 @@ where
 
         match gui.mode {
             Modes::PERFORM => {
+                if just_pressed.contains(&Keycode::Left) {
+                    gui.current_octave -= 1;
+                }
+                if just_pressed.contains(&Keycode::Right) {
+                    gui.current_octave += 1;
+                }
+
                 if !gui.effect_params.is_empty() {
                     if just_pressed.contains(&Keycode::K) {
                         gui.current_effect = if gui.current_effect>0 { gui.current_effect-1 } else { gui.effect_params.len()-1 };
