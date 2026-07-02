@@ -290,9 +290,10 @@ pub enum Modes {
 struct GUI {
     throttle_ms: u128,
     last_sent_slider: time::SystemTime,
+    edit_column: usize,
+    current_instrument: usize,
     current_effect: usize,
     current_param: usize,
-    currently_adding: bool,
     current_to_add: usize,
     mode: Modes,
     effect_stack: Vec<&'static effect::EffectDefinition>,
@@ -354,9 +355,10 @@ where
     let mut gui = GUI {
         throttle_ms: 50,
         last_sent_slider: time::SystemTime::now(),
+        edit_column: 1,
+        current_instrument: 0,
         current_effect: 0,
         current_param: 0,
-        currently_adding: true,
         current_to_add: 0,
         mode: Modes::PERFORM,
         effect_stack: Vec::new(),
@@ -368,9 +370,10 @@ where
         let GUI {
             throttle_ms: _,
             last_sent_slider: _,
+            edit_column,
+            current_instrument,
             current_effect,
             current_param,
-            currently_adding,
             current_to_add,
             mode,
             effect_stack,
@@ -383,6 +386,7 @@ where
         match mode {
             Modes::PERFORM => {
                 println!("PERFORM MODE");
+                println!("{}", GENERATOR_BANK[*current_instrument].title);
                 for i in 0..effect_stack.len() {
                     println!("  {}", effect_stack[i].title);
                     print!("  ");
@@ -399,19 +403,25 @@ where
             },
             Modes::EDIT => {
                 println!("EDIT MODE");
-                println!("current effect stack:\tavailable effects:");
-                println!("press delete to remove:\tpress enter to add:\n");
+                println!("current effect stack:\tavailable effects:\tinstruments:");
+                println!("press delete to remove:\tpress enter to add:\tJ and K to choose:\n");
                 for i in 0..usize::max(effect_stack.len(),EFFECT_BANK.len()) {
-                    let stack_hovering = (!*currently_adding) && i==*current_effect;
+                    let stack_hovering = *edit_column==0 && i==*current_effect;
                     print!("{}\t{}", 
                              if stack_hovering {">"} else {" "},
                              if i<effect_stack.len() {effect_stack[i].title} else {""}
                     );
                     print!("\t");
-                    let bank_hovering = *currently_adding && i==*current_to_add;
+                    let bank_hovering = *edit_column==1 && i==*current_to_add;
                     print!("{}\t{}",
                              if bank_hovering {">"} else {" "},
                              if i<EFFECT_BANK.len() {EFFECT_BANK[i].title} else {""}
+                    );
+                    print!("\t");
+                    let instrument_hovering = *edit_column==2 && i==*current_instrument;
+                    print!("{}\t{}",
+                             if instrument_hovering {">"} else {" "},
+                             if i<GENERATOR_BANK.len() {GENERATOR_BANK[i].title} else {""}
                     );
                     println!("");
                 }
@@ -492,8 +502,7 @@ where
 
         for (k,v) in &piano {
             if just_pressed.contains(&k) {
-                // TODO: option to change instrument live?
-                let _ = prod.try_push(AudioCommand::Press(0, k.clone(), *v));
+                let _ = prod.try_push(AudioCommand::Press(gui.current_instrument, k.clone(), *v));
             }
             if just_released.contains(&k) {
                 let _ = prod.try_push(AudioCommand::Release(k.clone()));
@@ -536,40 +545,55 @@ where
                 }
             },
             Modes::EDIT => {
-                if just_pressed.contains(&Keycode::H) || just_pressed.contains(&Keycode::L) {
-                    gui.currently_adding = !gui.currently_adding;
+                if just_pressed.contains(&Keycode::H) {
+                    gui.edit_column = if gui.edit_column>0 { gui.edit_column-1 } else { 2 };
                 }
-                if gui.currently_adding {
-                    if just_pressed.contains(&Keycode::K) {
-                        gui.current_to_add = gui.current_to_add.saturating_sub(1);
-                    }
-                    if just_pressed.contains(&Keycode::J) {
-                        gui.current_to_add = usize::min(gui.current_to_add+1, EFFECT_BANK.len());
-                    }
-                    if just_pressed.contains(&Keycode::Enter) {
-                        let current_to_add = gui.current_to_add;
-                        add_effect(
-                            &mut prod,
-                            &mut gui,
-                            EFFECT_BANK[current_to_add]
-                        );
-                    }
+                if just_pressed.contains(&Keycode::L) {
+                    gui.edit_column = if gui.edit_column<2 { gui.edit_column+1 } else { 0 };
                 }
-                else {
-                    if just_pressed.contains(&Keycode::K) {
-                        gui.current_effect = gui.current_effect.saturating_sub(1);
-                    }
-                    if just_pressed.contains(&Keycode::J) {
-                        gui.current_effect = usize::min(gui.current_effect+1, gui.effect_params.len());
-                    }
-                    if just_pressed.contains(&Keycode::Delete) {
-                        let current_effect = gui.current_effect;
-                        del_effect(
-                            &mut prod,
-                            &mut gui,
-                            current_effect
-                        );
-                    }
+                match gui.edit_column {
+                    0 => {
+                        if just_pressed.contains(&Keycode::K) {
+                            gui.current_effect = gui.current_effect.saturating_sub(1);
+                        }
+                        if just_pressed.contains(&Keycode::J) {
+                            gui.current_effect = usize::min(gui.current_effect+1, gui.effect_params.len());
+                        }
+                        if just_pressed.contains(&Keycode::Delete) {
+                            let current_effect = gui.current_effect;
+                            del_effect(
+                                &mut prod,
+                                &mut gui,
+                                current_effect
+                            );
+                        }
+                    },
+                    1 => {
+                        if just_pressed.contains(&Keycode::K) {
+                            gui.current_to_add = gui.current_to_add.saturating_sub(1);
+                        }
+                        if just_pressed.contains(&Keycode::J) {
+                            gui.current_to_add = usize::min(gui.current_to_add+1, EFFECT_BANK.len());
+                        }
+                        if just_pressed.contains(&Keycode::Enter) {
+                            let current_to_add = gui.current_to_add;
+                            add_effect(
+                                &mut prod,
+                                &mut gui,
+                                EFFECT_BANK[current_to_add]
+                            );
+                        }
+                    },
+                    2 => {
+                        if just_pressed.contains(&Keycode::K) {
+                            gui.current_instrument = gui.current_instrument.saturating_sub(1);
+                        }
+                        if just_pressed.contains(&Keycode::J) {
+                            gui.current_instrument = usize::min(gui.current_instrument+1, GENERATOR_BANK.len());
+                        }
+                    },
+                    _ => {
+                    },
                 }
 
                 if just_pressed.contains(&Keycode::Tab) {
